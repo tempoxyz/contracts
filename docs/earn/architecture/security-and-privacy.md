@@ -2,7 +2,7 @@
 
 This page states what each privileged party can and cannot do, which accounting protections the
 contracts enforce, which external dependencies remain trusted, and what Zone privacy does and does
-not hide. Audit coverage is on the [audits page](../audit/README.md).
+not hide. Audit coverage is on the [audits page](../../audits.md).
 
 ## Security model at a glance
 
@@ -162,9 +162,12 @@ unrepresented after floor rounding.
 EarnVault economic calls, `EarnFees.claim`, engine asset paths, and the router callback use local
 reentrancy locks. The EarnVault, EarnFees, engine, and router locks are transient flags, so they occupy no
 storage slot (Tempo charges 250,000 gas for each slot first written nonzero), and an EarnVault refuses
-locked calls until it is initialized. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
-topped up only when it is below the amount moved; it holds base assets only within a call, and
-`migrateEngine` revokes the retired engine's approval. The router
+locked calls until it is initialized. Deposits and contributions to an engine with
+`IEarnEngineHeldDeposit` (every engine in this repository) go from the caller straight to the engine,
+with no allowance. For an engine without it, and when `migrateEngine` moves backing into a new engine,
+the EarnVault keeps a standing maximum base-asset approval to its installed engine, topped up only
+when it is below the amount moved; it holds base assets only within a call, and `migrateEngine`
+revokes the retired engine's approval. The router
 keeps standing maximum approvals only to its immutable EarnVault and pool and its source Zone's
 Portal (Tempo charges every zero-to-nonzero allowance as a new storage slot; the Portal moves the
 router's tokens only inside a `depositEncrypted` call the router makes), performs one downstream call, and verifies touched
@@ -249,7 +252,7 @@ reveal the private recipient from that correlation alone, but it does not hide t
 
 ## Production readiness checklist
 
-- Release covered by the completed [Solidity audits](../audit/README.md), with any
+- Release covered by the completed [Solidity audits](../../audits.md), with any
   post-audit change separately reviewed, plus an independent economic review.
 - Sole-issuer verification and issuer-role monitoring.
 - Reviewed base asset, venue, engine, and valuation behavior against the real venue:

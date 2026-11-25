@@ -128,7 +128,7 @@ case; for an ERC-4626 proof of concept, run `pnpm e2e:local -- --variant erc4626
 Local fixture success validates the implementation, not a live external venue. Before production
 use, verify the actual deployment, simulate with the application's caller and limits, and run only
 the funded checks the user authorized. An Earn test stack is a hosted demo, not an assurance of
-production yield or liquidity; the [audits page](../audit/README.md) lists audit coverage.
+production yield or liquidity; the [audits page](../../audits.md) lists audit coverage.
 
 In the handoff, distinguish quotes, simulations, confirmed receipts, and complete application tests.
 State which chain and deployment were checked, which access or liquidity assumptions remain, and

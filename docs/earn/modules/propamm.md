@@ -5,7 +5,7 @@ deployment, authorities, failure modes, tests, and the pinned DirectPropAMM fixt
 engine's tests and the [Zone router](zone-router.md)'s par conversion use. The shared engine
 contract is in [yield engines](../integrations/engines.md).
 
-`PropAMMEngine` is experimental and outside the completed [audits](../audit/README.md#scope).
+`PropAMMEngine` is experimental and outside the completed [audits](../../audits.md#coverage).
 
 ## Contract
 

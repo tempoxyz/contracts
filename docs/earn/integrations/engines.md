@@ -4,16 +4,18 @@ A yield engine is the contract that holds an Earn deployment's position in one v
 integrators choosing an engine and for contributors adding one. It owns the shared engine contract,
 installation checks, and the recipe for a new engine kind. Each kind is a module with its own page:
 
-| Kind      | Engine          | Venue              | Provisioning                    | In-kind entry | Queued exits           | Page                                     |
-| --------- | --------------- | ------------------ | ------------------------------- | ------------- | ---------------------- | ---------------------------------------- |
-| `erc4626` | `ERC4626Engine` | ERC-4626 vault     | Factory from venue, or existing | Yes           | No                     | [ERC-4626](../modules/erc4626-engine.md) |
-| `veda`    | `VedaEngine`    | BoringVault        | Existing engine                 | No            | When a Queue is active | [Veda](../modules/veda.md)               |
-| `propamm` | `PropAMMEngine` | DirectPropAMM pool | Existing engine                 | No            | No                     | [PropAMM](../modules/propamm.md)         |
-| `hold`    | `HoldEngine`    | None (holds asset) | Existing engine                 | No            | No                     | [Hold](../modules/hold.md)               |
+| Kind      | Engine          | Venue              | Provisioning                     | In-kind entry | Queued exits           | Page                                     |
+| --------- | --------------- | ------------------ | -------------------------------- | ------------- | ---------------------- | ---------------------------------------- |
+| `erc4626` | `ERC4626Engine` | ERC-4626 vault     | Factory from venue, or existing  | Yes           | No                     | [ERC-4626](../modules/erc4626-engine.md) |
+| `veda`    | `VedaEngine`    | BoringVault        | Existing engine                  | No            | When a Queue is active | [Veda](../modules/veda.md)               |
+| `propamm` | `PropAMMEngine` | DirectPropAMM pool | Existing engine                  | No            | No                     | [PropAMM](../modules/propamm.md)         |
+| None      | `HoldEngine`    | None (holds asset) | Contract only (no registry kind) | No            | No                     | [Hold](../modules/hold.md)               |
 
 Every kind supports immediate redemption and exact withdrawal. Tooling, localnet, and E2E
 read each kind's properties from the shared
 [engine registry](../../../deployments/modules/earn/engines/index.ts) instead of branching on the kind.
+`HoldEngine` has no registry kind, so the lifecycle, localnet and E2E cannot deploy it; it is
+deployed by hand ([Hold deployment](../modules/hold.md#deployment)).
 
 ## Engine contract
 
@@ -29,8 +31,11 @@ valuation:
 
 Every engine serves exactly one EarnVault with the same immutable base asset, and:
 
-- pulls base assets from the EarnVault, through a standing maximum approval the EarnVault keeps to
-  its installed engine, and deposits them into its venue;
+- receives base assets from the EarnVault and deposits them into its venue: with
+  `IEarnEngineHeldDeposit` (every engine in this repository) the EarnVault transfers them from its
+  caller straight to the engine before `depositHeld`; otherwise, and when `migrateEngine` moves
+  backing into it, the engine pulls them through a standing maximum approval the EarnVault keeps to
+  its installed engine;
 - holds the resulting venue shares itself;
 - sends redeemed assets directly to the receiver the EarnVault selects; and
 - never mints or burns EarnShare.

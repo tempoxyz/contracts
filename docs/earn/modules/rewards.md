@@ -20,7 +20,7 @@ There are two reward mechanisms, each with an optional contract:
 Neither contract has EarnShare issuer, EarnVault or EarnFees configuration, engine, router, or
 policy-administrator authority. The core `contribute` sequence is in
 [flows](../architecture/flows.md#contribution) and fee treatment in [fees](../architecture/fees.md).
-Audit coverage is in [audits](../audit/README.md#scope).
+Audit coverage is in [audits](../../audits.md#coverage).
 
 ## Exchange-rate contributions
 

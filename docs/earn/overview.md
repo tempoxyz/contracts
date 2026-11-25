@@ -17,7 +17,7 @@
 
 [![Pull Request](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml)
 [![Local E2E](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml)
-[![Audited by Sigma Prime](https://img.shields.io/badge/audited_by-Sigma_Prime-2ea44f)](audit/README.md)
+[![Audited by Sigma Prime](https://img.shields.io/badge/audited_by-Sigma_Prime-2ea44f)](../audits.md)
 
 Tempo Earn is vault-backed stablecoin yield for [Tempo](https://tempo.xyz). Users deposit a
 stablecoin into a persistent `EarnVault` and receive EarnShare, a non-rebasing
@@ -107,7 +107,8 @@ profiles, and the shared tooling also live.
 
 [Sigma Prime](https://sigmaprime.io) completed two security reviews in August 2026, the Zones & Earn
 Review v1.1 and the PropAMM & Earn Review v2.0, and every finding that affects Earn is resolved. The
-[audits page](audit/README.md) lists each report's scope.
+[audits page](../audits.md) lists each report's scope, and which contracts are not audited or have
+changed since.
 
 ## Security
 

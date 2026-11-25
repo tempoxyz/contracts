@@ -4,7 +4,7 @@ This page owns the `veda` engine kind: `VedaEngine`, `VedaPeripheryRegistry`, an
 `VedaForwardingSolver`, their valuation, immediate and queued exits, periphery rotation, request
 data, deployment, authorities, and tests. The shared engine contract is in
 [yield engines](../integrations/engines.md). The three contracts are in the Sigma Prime PropAMM &
-Earn review and unchanged since ([audits](../audit/README.md)).
+Earn review; `VedaEngine` and `VedaForwardingSolver` have changed since ([audits](../../audits.md#coverage)).
 
 `VedaEngine` ([source](../../../src/earn/engines/veda/VedaEngine.sol)) holds BoringVault shares for one
 EarnVault and drives the Teller, optional Queue, and Accountant that the BoringVault owner publishes.
@@ -320,9 +320,17 @@ Queue.trackWithdrawsOnChain() == true
 Queue.getOnChainWithdraw(requestId) returns the exact stored request
 Queue.previewAssetsOut(assetOut, shares, discount) quotes the request-time fixed payout
 Queue.cancelOnChainWithdrawUsingRequestId(requestId) is authorized for VedaEngine
+the Veda admin never cancels a request the engine filed (only the engine cancels its own requests)
 VedaForwardingSolver is immutable to the exact Queue, Teller, stock solver, and VedaEngine
 stock solver boringRedeemSolve accepts the supported request tuple, Teller, and coverDeficit flag
 ```
+
+The engine closes a claim only through its own cancellation or settlement. A request the Veda admin
+cancels outside the engine (such as a RolesAuthority housekeeping or emergency cancel) returns its
+shares to the engine while the claim stays open: `cancelRedeem` then reverts because the Queue no
+longer holds the request, `migrateEngine` and base-asset sweeps stay blocked by the open claim, and
+the returned shares become surplus that anyone can absorb for every holder. So a release's Veda
+admin must commit never to cancel the engine's requests.
 
 For each deficit-covering solve, the authorized solver approves an exact base-asset amount to the
 forwarder immediately before `solveAndForward(requestIds, true)`; never leave a standing allowance.

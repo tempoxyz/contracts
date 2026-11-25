@@ -5,7 +5,7 @@ backing, quarantined surplus, and pending claims stay separate, who may change w
 enforce each invariant. Fee economics are in [Earn fees](fees.md), transaction order in
 [flows](flows.md), trust assumptions in [security and privacy](security-and-privacy.md), and function
 signatures in the [contract reference](../reference/contracts.md). Audit coverage is on the
-[audits page](../audit/README.md).
+[audits page](../../audits.md).
 
 ## Goal
 
