@@ -177,12 +177,14 @@ contract EarnVaultHandler is RevertRecordingHandler {
         try core.redeem(shares, address(this), 1) { }
         catch (bytes memory reason) {
             // The vault refuses an exit that pays nothing or loses more than one basis point to rounding; the
-            // engine enforces the caller's minimum first.
+            // engine enforces the caller's minimum first. The exit's fee checkpoint can mint past the EarnShare
+            // count bound.
             _expectOnly(
                 reason,
                 EarnVault.InsufficientOutput.selector,
                 EarnVault.ExcessiveConversionLoss.selector,
-                ProportionalMockEngine.MinimumAssetsNotMet.selector
+                ProportionalMockEngine.MinimumAssetsNotMet.selector,
+                EarnVault.ExceedsMaxEarnShares.selector
             );
         }
     }
@@ -202,12 +204,14 @@ contract EarnVaultHandler is RevertRecordingHandler {
         try core.withdrawExact(assets, address(this), shareBalance) { }
         catch (bytes memory reason) {
             // The vault refuses an exit that pays nothing, loses more than one basis point to rounding, or
-            // would leave backing behind its last managed engine share.
+            // would leave backing behind its last managed engine share. The exit's fee checkpoint can mint past
+            // the EarnShare count bound.
             _expectOnly(
                 reason,
                 EarnVault.InsufficientOutput.selector,
                 EarnVault.ExcessiveConversionLoss.selector,
-                EarnVault.ResidualBacking.selector
+                EarnVault.ResidualBacking.selector,
+                EarnVault.ExceedsMaxEarnShares.selector
             );
         }
     }
@@ -263,7 +267,8 @@ contract FeeEarnVaultHandler is EarnVaultHandler {
     function checkpointFees() external {
         try core.accrueFees() { }
         catch (bytes memory reason) {
-            _expectOnly(reason);
+            // A checkpoint can mint fee EarnShare past the EarnShare count bound.
+            _expectOnly(reason, EarnVault.ExceedsMaxEarnShares.selector);
         }
     }
 
@@ -293,7 +298,8 @@ contract FeeEarnVaultHandler is EarnVaultHandler {
         vm.prank(administrator);
         try core.setFeeConfig(config) { }
         catch (bytes memory reason) {
-            _expectOnly(reason);
+            // Changing the config checkpoints first, which can mint past the EarnShare count bound.
+            _expectOnly(reason, EarnVault.ExceedsMaxEarnShares.selector);
         }
     }
 
@@ -302,7 +308,8 @@ contract FeeEarnVaultHandler is EarnVaultHandler {
         vm.prank(administrator);
         try core.disableFees() { }
         catch (bytes memory reason) {
-            _expectOnly(reason);
+            // Disabling checkpoints first, which can mint past the EarnShare count bound.
+            _expectOnly(reason, EarnVault.ExceedsMaxEarnShares.selector);
         }
     }
 
