@@ -19,7 +19,7 @@ on:
         description: Broadcast, source verify, and record; unchecked only simulates and plans
         required: true
         type: boolean
-        default: true
+        default: false
       resubmit-verification:
         description: Resubmit source verification where the verifier's record differs from ours (broadcast only)
         required: true
@@ -57,13 +57,8 @@ jobs:
       BROADCAST: ${{ inputs.broadcast }}
       # Only with broadcast: the commands refuse it otherwise.
       RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}
-      DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-      # Optional. Where set, profile deploys make the Zone administrator's grants themselves, such as
-      # admitting a new router on its Zone Portal; where unset, they stop at that handoff.
-      ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}
-      TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
-      TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
-      TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+    # The keys and RPC credentials reach only the three deploy steps, and this job restores no
+    # dependency or build cache, so nothing another job wrote runs beside them.
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -76,8 +71,14 @@ jobs:
         with:
           forge-cache: deploy
           workspace: '@tempoxyz/contracts'
+          caches: 'false'
 
       - name: Deploy the factory releases
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
           arguments=("$NETWORK" all --output "$RUNNER_TEMP/factory-release.json")
@@ -90,6 +91,11 @@ jobs:
           fi
 
       - name: Deploy the ZoneRouterFactory
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
           arguments=("$NETWORK" zoneRouterFactory --parameters '{}' --output "$RUNNER_TEMP/zone-router-release.json")
@@ -120,6 +126,13 @@ jobs:
       - name: Deploy the profiles
         env:
           PROFILES: ${{ steps.profiles.outputs.profiles }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          # Optional. Where set, profile deploys make the Zone administrator's grants themselves, such as
+          # admitting a new router on its Zone Portal; where unset, they stop at that handoff.
+          ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -uo pipefail
           mapfile -t paths < <(jq -r '.[].path' <<<"$PROFILES")
@@ -153,16 +166,6 @@ jobs:
             fi
           done
           exit "$incomplete"
-
-      # Forge records the authenticated RPC URL in its script sequences under the profile's cache
-      # directory in cache/, which the forge cache saves for every branch to restore; remove them
-      # whatever the outcome.
-      - name: Remove Forge script sequences
-        if: ${{ always() }}
-        run: |
-          if [[ -d cache ]]; then
-            find cache -mindepth 1 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
-          fi
 
       - name: Save profile resume state
         if: ${{ always() && inputs.broadcast }}

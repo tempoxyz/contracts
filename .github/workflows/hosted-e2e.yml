@@ -45,9 +45,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # Its outputs choose the release environment, so it restores no cache either.
       - uses: ./.github/actions/setup
         with:
           workspace: '@tempoxyz/contracts'
+          caches: 'false'
 
       - name: Resolve the profile's network
         id: network
@@ -92,12 +94,8 @@ jobs:
       PROFILE: ${{ needs.network.outputs.profile }}
       GROUP: ${{ inputs.group }}
       VALIDATE_ONLY: ${{ inputs.validate-only }}
-      # Read-only validation signs nothing, so it never receives the deployer key.
-      DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}
-      # The third-party user, distinct from the operator; unset, those cases are blocked.
-      END_USER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.END_USER_PRIVATE_KEY || '' }}
-      # Reaches the Zone through Tempo API; validation also inspects the live Zone with it.
-      TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
+    # The keys reach only the run step, and this job restores no dependency cache, so nothing
+    # another job wrote runs beside them.
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -107,10 +105,19 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup
+        with:
+          caches: 'false'
 
       # The CLI refuses --group with --validate-only.
       - name: Run the cases
         id: run
+        env:
+          # Read-only validation signs nothing, so it never receives the deployer key.
+          DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}
+          # The third-party user, distinct from the operator; unset, those cases are blocked.
+          END_USER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.END_USER_PRIVATE_KEY || '' }}
+          # Reaches the Zone through Tempo API; validation also inspects the live Zone with it.
+          TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
         run: |
           set -euo pipefail
           arguments=("$PROFILE")
