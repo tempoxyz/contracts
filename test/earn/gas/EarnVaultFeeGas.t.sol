@@ -114,15 +114,14 @@ contract EarnVaultFeeGasAudit is Test {
     }
 }
 
-/// @dev Models the six-decimal EarnShare denomination used by current deployments. With a
-///      100-asset pool, a 5% annualized one-minute contribution is approximately nine raw asset
-///      units and does not advance the integer value-per-EarnShare checkpoint. A 100-raw-unit
-///      contribution advances it by one raw EarnShare unit.
+/// @dev Models the six-decimal EarnShare denomination used by current deployments. In a 100-asset pool a
+///      one-raw-unit contribution advances the high-water mark, but its fees stay below one asset unit and
+///      mint no fee EarnShare. A 100-raw-unit contribution mints fee EarnShare.
 contract EarnVaultContributionFeeGasAudit is Test {
     uint256 private constant INITIAL_DEPOSIT = 100e6;
     uint256 private constant ACTION_AMOUNT = 10e6;
-    uint256 private constant SUB_TICK_CONTRIBUTION = 9;
-    uint256 private constant CROSS_TICK_CONTRIBUTION = 100;
+    uint256 private constant SUB_UNIT_FEE_CONTRIBUTION = 1;
+    uint256 private constant WHOLE_UNIT_FEE_CONTRIBUTION = 100;
 
     CoreMockToken private asset;
     CoreMockToken private earnShare;
@@ -163,48 +162,48 @@ contract EarnVaultContributionFeeGasAudit is Test {
         asset.approve(address(earnVault), type(uint256).max);
     }
 
-    function testGasContributeBelowValuePerShareTick() public {
+    function testGasContributeBelowOneFeeUnit() public {
         vm.pauseGasMetering();
         uint256 highWaterMark = fees.highWaterMark();
         vm.prank(contributor);
         uint256 gasBefore = _startMeasure();
-        earnVault.contribute(SUB_TICK_CONTRIBUTION);
-        _stopMeasure("fees.contribute.sub-tick", gasBefore);
+        earnVault.contribute(SUB_UNIT_FEE_CONTRIBUTION);
+        _stopMeasure("fees.contribute.sub-unit-fee", gasBefore);
 
-        assertEq(fees.highWaterMark(), highWaterMark);
+        assertGt(fees.highWaterMark(), highWaterMark);
         assertEq(fees.claimableEarnShares(feeRecipient), 0);
     }
 
-    function testGasContributeCrossingValuePerShareTick() public {
+    function testGasContributeAboveOneFeeUnit() public {
         vm.pauseGasMetering();
         vm.prank(contributor);
         uint256 gasBefore = _startMeasure();
-        earnVault.contribute(CROSS_TICK_CONTRIBUTION);
-        _stopMeasure("fees.contribute.cross-tick", gasBefore);
+        earnVault.contribute(WHOLE_UNIT_FEE_CONTRIBUTION);
+        _stopMeasure("fees.contribute.whole-unit-fee", gasBefore);
 
         assertGt(fees.claimableEarnShares(feeRecipient), 0);
     }
 
-    function testGasDepositAfterSubTickContribution() public {
+    function testGasDepositAfterSubUnitFeeContribution() public {
         vm.pauseGasMetering();
         vm.prank(contributor);
-        earnVault.contribute(SUB_TICK_CONTRIBUTION);
+        earnVault.contribute(SUB_UNIT_FEE_CONTRIBUTION);
 
         vm.prank(holder);
         uint256 gasBefore = _startMeasure();
         earnVault.deposit(ACTION_AMOUNT, holder, 1);
-        _stopMeasure("fees.deposit.after-sub-tick-contribution", gasBefore);
+        _stopMeasure("fees.deposit.after-sub-unit-fee-contribution", gasBefore);
     }
 
-    function testGasRedeemAfterSubTickContribution() public {
+    function testGasRedeemAfterSubUnitFeeContribution() public {
         vm.pauseGasMetering();
         vm.prank(contributor);
-        earnVault.contribute(SUB_TICK_CONTRIBUTION);
+        earnVault.contribute(SUB_UNIT_FEE_CONTRIBUTION);
 
         vm.prank(holder);
         uint256 gasBefore = _startMeasure();
         earnVault.redeem(ACTION_AMOUNT, receiver, 1);
-        _stopMeasure("fees.redeem.after-sub-tick-contribution", gasBefore);
+        _stopMeasure("fees.redeem.after-sub-unit-fee-contribution", gasBefore);
     }
 
     function _startMeasure() private returns (uint256 gasBefore) {

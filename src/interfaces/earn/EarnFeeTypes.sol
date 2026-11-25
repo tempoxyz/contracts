@@ -35,6 +35,7 @@ struct FeePreview {
     uint256 excessFeeAssets;
     uint256 totalFeeAssets;
     uint256 totalFeeEarnShares;
+    // Values per EarnShare, scaled as EarnFees.highWaterMark.
     uint256 preFeeValuePerEarnShare;
     uint256 postFeeValuePerEarnShare;
     uint256 targetValuePerEarnShare;

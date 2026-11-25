@@ -220,6 +220,33 @@ contract EarnVaultAsyncTest is Test {
         assertEq(share.balanceOf(receiver), 4 ether);
     }
 
+    function testRequestRejectsReceiversThatCannotBePaid() public {
+        _deposit(10 ether);
+        // TIP-20 token addresses: the reserved 96-bit prefix followed by any 64 bits.
+        uint160 tip20Prefix = uint160(0x20C000000000000000000000) << 64;
+        address[5] memory unpayable = [
+            address(0), address(core), address(engine), address(tip20Prefix), address(tip20Prefix | type(uint64).max)
+        ];
+        vm.startPrank(user);
+        share.approve(address(core), type(uint256).max);
+        vm.expectRevert(EarnVault.ZeroAddress.selector);
+        core.requestRedeem(4 ether, "", unpayable[0]);
+        for (uint256 i = 1; i < unpayable.length; i++) {
+            vm.expectRevert(abi.encodeWithSelector(EarnVault.InvalidReceiver.selector, unpayable[i]));
+            core.requestRedeem(4 ether, unpayable[i], "");
+            vm.expectRevert(abi.encodeWithSelector(EarnVault.InvalidReceiver.selector, unpayable[i]));
+            core.requestRedeem(4 ether, "", unpayable[i]);
+        }
+
+        // Addresses just outside the reserved prefix are ordinary receivers.
+        address nearPrefix = address(tip20Prefix + (uint160(1) << 64));
+        bytes32 id = core.requestRedeem(4 ether, "", nearPrefix);
+        vm.stopPrank();
+        assertEq(core.pendingRedeem(id).receiver, nearPrefix);
+        assertEq(core.openRedeemRequestCount(), 1);
+        assertEq(share.balanceOf(user), 6 ether);
+    }
+
     function testCancellationRequiresAndEnforcesReceiverMinimum() public {
         _deposit(10 ether);
         vm.startPrank(user);
@@ -540,7 +567,7 @@ contract EarnVaultAsyncTest is Test {
         core.cancelRedeem(requestId, 10 ether);
 
         IEarnFees fees = IEarnFees(core.earnFees());
-        assertEq(fees.highWaterMark(), 1 ether);
+        assertEq(fees.highWaterMark(), 1 ether * 1e18);
         (uint256 feeAssets, uint256 feeEarnShares) = core.accrueFees();
         assertEq(feeAssets, 0);
         assertEq(feeEarnShares, 0);

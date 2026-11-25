@@ -6,6 +6,7 @@ import { FeeConfig } from "../../../src/interfaces/earn/EarnFeeTypes.sol";
 import { IEarnEngine } from "../../../src/interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../../../src/interfaces/earn/engines/IEarnEngineAsyncRedeem.sol";
 import { IEarnEngineExactWithdraw } from "../../../src/interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
+import { IEarnEngineFeeValuation } from "../../../src/interfaces/earn/engines/IEarnEngineFeeValuation.sol";
 import { IEarnEngineRedeem } from "../../../src/interfaces/earn/engines/IEarnEngineRedeem.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
@@ -225,6 +226,9 @@ contract CoreMockEngine {
     uint256 public redeemReportOverride;
     bool public redeemSupported = true;
     bool public exactWithdrawSupported = true;
+    /// @dev Advertised only when set before a vault installs this engine, which reads capabilities then.
+    bool public feeValuationSupported;
+    bool public isFeeValuationFresh = true;
     mapping(address => uint256) public balanceOf;
 
     constructor(CoreMockToken asset_, uint8 decimals_) {
@@ -260,6 +264,11 @@ contract CoreMockEngine {
     function setExitCapabilities(bool redeemSupported_, bool exactWithdrawSupported_) external {
         redeemSupported = redeemSupported_;
         exactWithdrawSupported = exactWithdrawSupported_;
+    }
+
+    function setFeeValuation(bool supported, bool fresh) external {
+        feeValuationSupported = supported;
+        isFeeValuationFresh = fresh;
     }
 
     function mintShares(address to, uint256 shares) external {
@@ -322,7 +331,8 @@ contract CoreMockEngine {
     function supportsInterface(bytes4 interfaceId) external view returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
             || (redeemSupported && interfaceId == type(IEarnEngineRedeem).interfaceId)
-            || (exactWithdrawSupported && interfaceId == type(IEarnEngineExactWithdraw).interfaceId);
+            || (exactWithdrawSupported && interfaceId == type(IEarnEngineExactWithdraw).interfaceId)
+            || (feeValuationSupported && interfaceId == type(IEarnEngineFeeValuation).interfaceId);
     }
 }
 

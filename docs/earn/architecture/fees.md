@@ -39,10 +39,11 @@ flowchart TB
 `EarnFees` is an ownerless clone initialized once with one EarnVault, one EarnShare, and an initial
 configuration:
 
-- only its EarnVault can checkpoint, configure, disable, ratchet baselines, or record and settle
-  async-request snapshots;
+- only its EarnVault can checkpoint, configure, disable, ratchet or restart baselines, or record and
+  settle async-request snapshots;
 - it takes active EarnShare supply, active assets and valuation freshness from its EarnVault, as
-  arguments to `accrueFees` and `initializeBaselines` and by reading the EarnVault elsewhere, and
+  arguments to `accrueFees`, `initializeBaselines` and `reopenBaselines` and by reading the
+  EarnVault elsewhere, and
   never chooses an engine or moves backing;
 - it has no issuer role: the EarnVault calls `EarnFees.accrueFees`, then mints the returned
   `totalFeeEarnShares` to `EarnFees`;
@@ -110,12 +111,14 @@ change assets and supply proportionally and leave it unchanged; a contribution r
 supply and so creates positive accrual. After a loss, no fee accrues until value exceeds the prior
 mark. A checkpoint with positive accrual advances the mark to the post-fee value.
 
-The mark also survives the active pool emptying: a reopened pool charges no fee until value per
-EarnShare exceeds the mark set before it emptied. A sole holder of a nearly empty pool can raise the
-mark cheaply, for example with 1 wei of principal and a 99-wei contribution, which leaves it 100×
-above par once the fee floors to zero EarnShare, and then exit. Later holders accrue no fees until
-value grows past that mark. Without a distributor, the operator restores fees by disabling and
-setting them again, which resets the mark; a stack with a distributor cannot disable fees.
+The mark does not survive the active pool emptying. Every earlier holder has left, so a principal
+entry that reopens an empty pool (a deposit, an in-kind deposit, or a deposit that restarts a pool
+whose supply had no backing) restarts the high-water mark, and any excess target, at the entry's own
+value per EarnShare through `EarnFees.reopenBaselines`, as an uncharged cancellation into an empty
+pool does. If the valuation is stale at that moment, `feeBaselinesPending` is set instead and the
+next fresh checkpoint sets both baselines to the then-current value without charging it. A sole
+holder of a nearly empty pool who raises the mark cheaply (for example 1 wei of principal and a
+99-wei contribution, 100× above par) therefore leaves nothing behind when it exits.
 
 The optional target starts at retained post-fee value and grows by simple annual interest, prorated
 per second over a 365-day year and rounded down:
@@ -127,13 +130,20 @@ target(t) = targetBase + targetBase × annualTargetRateBps / 10,000 × (t - targ
 Missed target growth carries forward. Whenever post-fee value exceeds the grown target, the target
 base resets to that value and its clock restarts, so the same excess is never charged twice.
 
-Stored baselines round up to the next representable per-EarnShare value. This treats an indivisible
-value band as already checkpointed, so repeated permissionless checkpoints cannot charge it twice.
-Each baseline advance may leave up to one per-EarnShare unit uncharged, and callers can compound
-that by checkpointing sub-precision growth repeatedly; rounding never increases a holder's fee.
+Values per EarnShare (the high-water mark, the target, `FeePreview`'s per-EarnShare fields and the
+values in `FeesAccrued` and `FeeBaselinesInitialized`) are asset units per whole EarnShare times
+10^18, so one value unit is 10^-18 of an asset unit per EarnShare. Stored baselines round up to the
+next value unit. This treats an indivisible value band as already checkpointed, so repeated
+permissionless checkpoints cannot charge it twice; rounding never increases a holder's fee. Each
+checkpoint also floors its positive accrual to whole asset units, so checkpointing more often can
+leave less than one asset unit of accrual uncharged per checkpoint, and nothing more: the fees of
+many checkpoints match those of one checkpoint over the same growth within one asset unit each.
+Request snapshots store values in asset units, rounded up, so a snapshot can leave less than one
+asset unit uncharged.
 
-After a base-asset or in-kind deposit, `EarnFees.initializeBaselines` raises the high-water mark,
-and an excess target, to the post-entry value when that is higher. Baselines never fall on entry.
+After a base-asset or in-kind deposit into a live pool, `EarnFees.initializeBaselines` raises the
+high-water mark, and an excess target, to the post-entry value when that is higher. Baselines never
+fall on entry into a live pool.
 When the deposit's checkpoint valued the pool, `accrueFees` also returns the lowest baseline it
 left, and the EarnVault skips `initializeBaselines` (and its `FeeBaselinesInitialized` event) when
 the post-entry value does not exceed it, since the call would change nothing.
@@ -163,7 +173,8 @@ value without a liquidity dependency.
 Allocations are calculated in asset terms first. Each fee carries its sub-unit remainder in
 `EarnFees` storage per configuration and slot, so checkpoint cadence cannot erase or increase fees
 through rounding. A configuration's five remainders share one storage slot, which keeps a marker
-bit once a remainder is carried, so waiving them never returns the slot to zero. Each remainder
+bit once a remainder is carried, so the slot stays nonzero while the configuration can still
+accrue. Waiving clears the slot, since a waived configuration never accrues again. Each remainder
 stays within a small multiple of `BPS_DENOMINATOR` (the cap never raises their sum), far inside its
 packed field; a value that would not fit reverts rather than truncating. The aggregate converts to
 EarnShare once, and each nonzero allocation receives its proportional share rounded down, except
@@ -320,7 +331,8 @@ When a cancellation reopens an empty pool with fees active:
 - a stale one sets `feeBaselinesPending`, and the next fresh checkpoint sets both baselines to the
   then-current value without charging it.
 
-Later checkpoints therefore treat the returned position as principal.
+Later checkpoints therefore treat the returned position as principal. A principal entry that
+reopens an empty pool follows the last two rules ([high-water mark](#high-water-mark-and-target)).
 
 ## Privacy
 
