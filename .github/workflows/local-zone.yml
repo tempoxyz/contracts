@@ -30,7 +30,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      pull-requests: read
     env:
       # Runners are discarded after the job, so the reaper sidecar (pulled from Docker Hub) is unneeded.
       TESTCONTAINERS_RYUK_DISABLED: 'true'

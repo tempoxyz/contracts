@@ -23,17 +23,24 @@ describe('spend workflow', () => {
       files?: { filename: string; previous_filename?: string }[],
     ) => {
       const outputs: Record<string, string> = {}
+      const compared: string[] = []
       const github = {
-        paginate: async () => files,
         rest: {
-          pulls: { listFiles: {} },
-          repos: { compareCommitsWithBasehead: async () => ({ data: { files } }) },
+          repos: {
+            compareCommitsWithBasehead: async ({ basehead }: { basehead: string }) => {
+              compared.push(basehead)
+              return { data: { files } }
+            },
+          },
         },
       }
       const context = {
         eventName,
-        issue: { number: 1 },
-        payload: { after: 'b'.repeat(40), before: 'a'.repeat(40) },
+        payload: {
+          after: 'b'.repeat(40),
+          before: 'a'.repeat(40),
+          pull_request: { base: { sha: 'c'.repeat(40) }, head: { sha: 'd'.repeat(40) } },
+        },
         repo: { owner: 'o', repo: 'r' },
       }
       const core = {
@@ -48,8 +55,10 @@ describe('spend workflow', () => {
         context,
         core,
       )
+      lastCompared = compared
       return outputs.run
     }
+    let lastCompared: string[] = []
 
     test.each([
       'src/zone/ZoneRouter.sol',
@@ -82,14 +91,18 @@ describe('spend workflow', () => {
       ).toBe('true')
     })
 
-    test('runs the jobs for other events and oversized pushes', async () => {
+    test('runs the jobs for other events and oversized changes', async () => {
       expect(await scope('workflow_dispatch')).toBe('true')
-      expect(
-        await scope(
-          'push',
-          Array.from({ length: 300 }, () => ({ filename: 'README.md' })),
-        ),
-      ).toBe('true')
+      const many = Array.from({ length: 300 }, () => ({ filename: 'README.md' }))
+      expect(await scope('push', many)).toBe('true')
+      expect(await scope('pull_request', many)).toBe('true')
+    })
+
+    test("compares the run's own commits, not the pull request's live head", async () => {
+      await scope('pull_request', [{ filename: 'README.md' }])
+      expect(lastCompared).toEqual([`${'c'.repeat(40)}...${'d'.repeat(40)}`])
+      await scope('push', [{ filename: 'README.md' }])
+      expect(lastCompared).toEqual([`${'a'.repeat(40)}...${'b'.repeat(40)}`])
     })
   })
 
