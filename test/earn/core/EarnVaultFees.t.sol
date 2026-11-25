@@ -1222,3 +1222,132 @@ contract EarnFeesWideBaselineTest is Test {
     }
 }
 
+/// @notice EarnFees driven directly, with this test as its paired vault, at the edges of its value arithmetic.
+contract EarnFeesBoundaryTest is Test {
+    uint256 private constant VALUE_PRECISION = 1e18;
+
+    EarnFees private fees;
+    FaultyMockToken private share;
+    uint256 private assetsNow;
+
+    function testEntryFloorSaturatesAtItsBoundaryMark() public {
+        // Zero decimals and 10 ** 18 EarnShare units make the mark exactly the active assets.
+        _initialize(0, _fixedConfig());
+        uint256 mark = type(uint256).max - (VALUE_PRECISION - 1);
+        fees.initializeBaselines(1e18, mark);
+        assertEq(fees.highWaterMark(), mark);
+
+        // A checkpoint with nothing above the mark returns the highest entry floor, saturated, instead of reverting.
+        (uint256 feeAssets,, uint256 baselineFloor, uint256 scale) = fees.accrueFees(1e18, mark, true);
+        assertEq(feeAssets, 0);
+        assertEq(scale, VALUE_PRECISION);
+        assertEq(baselineFloor, type(uint256).max);
+
+        // One value unit lower, the floor is the last value a step above the mark does not reach.
+        _initialize(0, _fixedConfig());
+        fees.initializeBaselines(1e18, mark - 1);
+        (,, baselineFloor,) = fees.accrueFees(1e18, mark - 1, true);
+        assertEq(baselineFloor, type(uint256).max - 1);
+    }
+
+    function testDrawdownTargetRestartsOnlyOnceValueExceedsIt() public {
+        // 10 ** 12 whole EarnShare, so a value per EarnShare moves in steps of 10 ** 6 value units per asset unit.
+        uint256 supply = 1e30;
+        _initialize(18, _fixedConfig());
+        share.mint(address(this), supply + 2);
+        fees.initializeBaselines(supply, 2e30);
+        uint256 mark = fees.highWaterMark();
+
+        // In a drawdown, adding an excess fee starts its target at the current value, below the mark.
+        assetsNow = 1.5e30 + 123_456_789;
+        FeeConfig memory config = _fixedConfig();
+        config.excess = ExcessReturnFee(true, address(0xE1), 1_000, 5_000);
+        fees.setFeeConfig(config);
+        uint256 base = fees.targetBase();
+        uint40 startedAt = fees.targetStartedAt();
+        assertLt(base, mark);
+
+        vm.warp(block.timestamp + 30 days);
+        uint256 targetNow = fees.previewAccruedFees().targetValuePerEarnShare;
+        assertGt(targetNow, base);
+        // A value just above the step below the grown target: rounded up to a whole step it passes the target,
+        // but the value itself stays below it.
+        uint256 stepBelow = targetNow - targetNow % VALUE_PRECISION;
+        uint256 assets = stepBelow / 1e6 + 1;
+        uint256 value = assets * 1e6;
+        assertLt(value, targetNow);
+        assertGt(stepBelow + VALUE_PRECISION, targetNow);
+
+        // Neither a checkpoint nor a principal entry restarts the target the value never reached.
+        (uint256 feeAssets,, uint256 baselineFloor,) = fees.accrueFees(supply, assets, true);
+        assertEq(feeAssets, 0);
+        assertEq(fees.targetBase(), base);
+        assertEq(fees.targetStartedAt(), startedAt);
+        // The vault skips a principal entry at or below the grown target, which changes nothing.
+        assertEq(baselineFloor, targetNow);
+        fees.initializeBaselines(supply, assets);
+        assertEq(fees.targetBase(), base);
+        assertEq(fees.targetStartedAt(), startedAt);
+        assertEq(fees.highWaterMark(), mark);
+
+        // A value above the target restarts it at that value rounded up to a whole step.
+        uint256 aboveAssets = targetNow / 1e6 + 1;
+        fees.accrueFees(supply, aboveAssets, true);
+        assertEq(fees.targetBase(), stepBelow + VALUE_PRECISION);
+        assertEq(fees.targetStartedAt(), block.timestamp);
+        assertEq(fees.highWaterMark(), mark);
+    }
+
+    function testEarnShareDecimalsAreCappedWhereValuesKeepHeadroom() public {
+        // At 59 decimals the value scale is 10 ** 77, within a factor of two of uint256, so a snapshot rebuilt
+        // from a one-unit request overflows; such an EarnShare is refused, as is anything past 36.
+        _expectInitializeReverts(59);
+        _expectInitializeReverts(37);
+
+        _initialize(36, _fixedConfig());
+        assertEq(fees.earnShareScale(), 1e36);
+
+        // At the cap, ten EarnShare units worth 10 ** 22 asset units each value a whole EarnShare at 10 ** 58 asset
+        // units, and a one-unit request's snapshot still rebuilds within uint256 when it is cancelled.
+        fees.initializeBaselines(10, 1e23);
+        uint256 mark = fees.highWaterMark();
+        assertEq(mark, 1e76);
+        bytes32 requestId = keccak256("request");
+        fees.recordRedeemRequest(requestId, 1);
+        assertTrue(fees.shouldChargeRedeem(requestId));
+
+        // The unit doubled while queued: the fee is 10% of its growth, worth less than the one re-entry unit.
+        uint256 feeEarnShares = fees.settleCancelledRedeem(requestId, 1, 2e22, 9, 9e22, 2);
+        assertEq(feeEarnShares, 0);
+        assertFalse(fees.shouldChargeRedeem(requestId));
+        assertGe(fees.highWaterMark(), mark);
+    }
+
+    /// @dev EarnFees reads the paired vault's active assets and valuation freshness back from it.
+    function totalAssets() external view returns (uint256) {
+        return assetsNow;
+    }
+
+    function isFeeValuationFresh() external pure returns (bool) {
+        return true;
+    }
+
+    function _initialize(uint8 decimals, FeeConfig memory config) private {
+        share = new FaultyMockToken("Earn Share", "EARN", decimals);
+        fees = EarnFees(Clones.clone(address(new EarnFees())));
+        fees.initialize(address(this), address(share), config);
+    }
+
+    function _expectInitializeReverts(uint8 decimals) private {
+        FaultyMockToken wide = new FaultyMockToken("Earn Share", "EARN", decimals);
+        EarnFees clone = EarnFees(Clones.clone(address(new EarnFees())));
+        vm.expectRevert(EarnFees.InvalidFeeConfiguration.selector);
+        clone.initialize(address(this), address(wide), _fixedConfig());
+    }
+
+    function _fixedConfig() private pure returns (FeeConfig memory config) {
+        config.fixedFeeCount = 1;
+        config.fixedFees[0] = FixedFeeRecipient(address(0xF1), 1_000);
+    }
+}
+

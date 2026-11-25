@@ -129,17 +129,18 @@ per second over a 365-day year and rounded down:
 target(t) = targetBase + targetBase × annualTargetRateBps / 10,000 × (t - targetStartedAt) / 365 days
 ```
 
-Missed target growth carries forward. Whenever the value the pool has settled fees to exceeds the
-grown target, the target base resets to that value and its clock restarts, so the same excess is
-never charged twice. After a charging checkpoint that value is the new high-water mark; otherwise it
-is the current value rounded up to a whole step (below), but never above the mark, so the target
-never passes accrual that is still waiting.
+Missed target growth carries forward. Whenever the current value and the value the pool has settled
+fees to both exceed the grown target, the target base resets to the settled value and its clock
+restarts, so the same excess is never charged twice. After a charging checkpoint that value is the
+new high-water mark; otherwise it is the current value rounded up to a whole step (below), but never
+above the mark, so the target never passes accrual that is still waiting. A value below the grown
+target never restarts it, even when it rounds up past it.
 
 Values per EarnShare (the high-water mark, the target, `FeePreview`'s per-EarnShare fields and the
 values in `FeesAccrued` and `FeeBaselinesInitialized`) are asset units per whole EarnShare times
 10^18, so one value unit is 10^-18 of an asset unit per EarnShare; `EarnFees` refuses an EarnShare
-with more than 59 decimals, so that scale fits. Stored baselines round up to the next value unit, so
-no value band is charged twice.
+with more than 36 decimals, so that scale is at most 10^54 and every value it prices fits with room
+to spare. Stored baselines round up to the next value unit, so no value band is charged twice.
 
 Accrual is charged in steps of one asset unit per whole EarnShare (10^18 value units). A checkpoint
 charges only once value per EarnShare is at least one step above the high-water mark and the accrual
@@ -157,15 +158,15 @@ down by less than one EarnShare unit ([fee-share accounting](#fee-share-accounti
 day, charges 1,369,862,999 asset units of fees and leaves one unit of accrual waiting, against
 1,369,863,000 for one checkpoint.
 
-Waiting accrual is not yet charged when supply changes: an exit takes its part of it uncharged, and
-an entry's EarnShare carries the same value above the mark and pays its fee at the next charge. Each
-is less than one step per EarnShare.
+Waiting accrual is not yet charged when supply changes: an exit, including a queued request, takes
+its part of it uncharged, and an entry's EarnShare carries the same value above the mark and pays its
+fee at the next charge. Each is less than one step per EarnShare.
 
 After a base-asset or in-kind deposit into a live pool, `EarnFees.initializeBaselines` raises the
 high-water mark to the post-entry value when that is at least one step higher; a smaller rise may be
-accrual still waiting, so it stays above the mark. An excess target below the mark restarts at the
-post-entry value rounded up to a whole step, at most the mark. Baselines never fall on entry into a
-live pool.
+accrual still waiting, so it stays above the mark. An excess target the post-entry value exceeds
+restarts at that value rounded up to a whole step, at most the mark. Baselines never fall on entry
+into a live pool.
 When the deposit's checkpoint valued the pool, `accrueFees` also returns the lowest baseline it
 left, and the EarnVault skips `initializeBaselines` (and its `FeeBaselinesInitialized` event) when
 the post-entry value does not exceed it, since the call would change nothing.
@@ -308,9 +309,12 @@ The request, finalization, and cancellation sequences are in
 [async redemption](flows.md#async-redemption). At request time the EarnVault checkpoints the active
 pool, burns the requester's EarnShare, moves the corresponding engine shares into the engine queue,
 and records the claim. If fees are active and the valuation is fresh, `EarnFees` also stores a
-snapshot in one storage slot: the high-water mark and current grown target scaled to the burned
-EarnShare (rounded up), the configuration ID, and the request time. The burned EarnShare stays in the
-EarnVault's request record, which passes it back on cancellation.
+snapshot in one storage slot: the higher of the high-water mark and the value per EarnShare the
+request's checkpoint settled to, and the current grown target, each scaled to the burned EarnShare
+(rounded up), the configuration ID, and the request time. Accrual still waiting below one step
+leaves with the request uncharged, as with any exit, so a cancellation charges only growth while
+queued. The burned EarnShare stays in the EarnVault's request record, which passes it back on
+cancellation.
 
 Active holders keep earning and paying fees while the claim is open. Finalization pays the engine's
 fixed result to the stored receiver and closes the claim and its snapshot with no burn and no fee
@@ -335,10 +339,11 @@ meet the caller's nonzero `minReceiverEarnShares`. A re-entry into a nonempty po
 than one basis point of the returned engine shares unrepresented reverts. Losses pay no fee and
 re-enter at their returned value. With a chargeable snapshot, queuing does not avoid fees on
 positive queued growth; stale valuation and fee disablement are explicit exceptions. After a charged
-re-entry into a nonempty pool, the baselines ratchet up to the pooled value as after a principal
-entry, since everything in the pool was just charged, except accrual still waiting. A small active
-pool, such as a seed unit whose value rounds down, therefore cannot leave the mark low and have the
-next checkpoint charge the queued growth again by more than the one step a rise must reach.
+re-entry into a nonempty pool, `EarnFees` raises the high-water mark so it values the pooled supply
+at no less than the active pool's old mark plus the returned value, and the baselines then ratchet
+as after a principal entry. The queued growth the cancellation charged is therefore never charged
+again, even after a re-entry into a small active pool such as a seed unit whose value rounds down,
+while accrual still waiting in the active pool stays above the mark.
 
 A request filed while the valuation is stale records no snapshot, and a stale cancellation charges
 none, so either remains cancellable and finalizable without the expired NAV. Cancellation closes
