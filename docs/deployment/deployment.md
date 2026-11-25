@@ -9,7 +9,7 @@ the [Zone router releases](#zone-router-releases), and the [Bridge releases](#br
 [deployment package reference](../../deployments/README.md).
 
 The current Foundry deployment scripts and this profile lifecycle tooling are outside audit scope
-([audits](../earn/audit/README.md#scope)).
+([audits](../audits.md#coverage)).
 
 ## Commands
 

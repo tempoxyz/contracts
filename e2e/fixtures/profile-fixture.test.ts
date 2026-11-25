@@ -13,19 +13,15 @@ import {
   type ProfileFixtureRecord,
 } from './profile-fixture.js'
 
-const mainnetProfilePath = fileURLToPath(
-  new URL('../../profiles/veda-mainnet/profile.json', import.meta.url),
+const testnetProfilePath = fileURLToPath(
+  new URL('../../profiles/veda-moderato/profile.json', import.meta.url),
 )
 
 describe('loadOptionalProfileFixture', () => {
-  it('loads the checked-in mainnet profile without the retired synthetic fixture', () => {
-    const { profile, record } = loadEarnProfileBundle(mainnetProfilePath)
-    expect(profile.chainId).toBe(4217)
-    expect(loadOptionalProfileFixture(mainnetProfilePath, profile, record)).toBeUndefined()
-  })
-
-  it('still rejects a synthetic fixture added to a mainnet profile', () => {
-    const { profile, record } = loadEarnProfileBundle(mainnetProfilePath)
+  it('rejects a synthetic fixture on a mainnet profile', () => {
+    const bundle = loadEarnProfileBundle(testnetProfilePath)
+    const profile = { ...bundle.profile, chainId: 4217 }
+    const { record } = bundle
     const root = mkdtempSync(join(tmpdir(), 'mainnet-fixture-'))
     try {
       writeFileSync(

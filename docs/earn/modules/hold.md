@@ -19,14 +19,17 @@ Contract: [`HoldEngine.sol`](../../../src/earn/engines/hold/HoldEngine.sol). Tes
 | `totalShares()`  | The base asset the engine holds, including unrecorded direct transfers |
 | `totalAssets()`  | Same as `totalShares()`                                                |
 | `valueOf(s)`     | `s`                                                                    |
-| `deposit(a)`     | Pulls `a` from the EarnVault and returns `a` engine shares             |
+| `depositHeld(a)` | Records `a` the EarnVault already sent and returns `a` engine shares   |
+| `deposit(a)`     | Pulls `a` from the EarnVault; used only when a migration installs it   |
 | `redeem(s, …)`   | Pays `s` to the receiver                                               |
 | `withdraw(a, …)` | Pays exactly `a` and burns `a` engine shares                           |
 
-Every fund flow measures the engine's balance change and reverts with `InexactTransfer` unless it
-matches, so the EarnVault's engine-share ledger moves with the holding. There is no venue, oracle,
-pause, queue or expiring valuation; the engine advertises `IEarnEngine`, `IEarnEngineRedeem` and
-`IEarnEngineExactWithdraw`, and not fee valuation.
+Every transfer the engine makes or pulls measures its balance change and reverts with
+`InexactTransfer` unless it matches, so the EarnVault's engine-share ledger moves with the holding. There is no venue, oracle,
+pause, queue or expiring valuation; the engine advertises `IEarnEngine`, `IEarnEngineRedeem`,
+`IEarnEngineExactWithdraw` and `IEarnEngineHeldDeposit`, and not fee valuation. So the EarnVault
+transfers each deposit and contribution from its caller straight to the engine and then calls
+`depositHeld`, checking the engine's balance rose by exactly that amount.
 
 The owner binds the engine once to an EarnVault with the same asset
 (`initializeEarnVault(vault)` or `initializeEarnVault(vault, finalOwner)`). After binding only the
@@ -34,9 +37,9 @@ EarnVault can move funds.
 
 ## Funding yield
 
-The funder approves the EarnVault and calls `EarnVault.contribute(assets)`. The EarnVault deposits
-the assets into the engine and records them as backing without minting EarnShare, so every current
-holder's EarnShare rises pro rata. Later entrants buy in at the raised price.
+The funder approves the EarnVault and calls `EarnVault.contribute(assets)`. The EarnVault transfers
+the assets from the funder to the engine and records them as backing without minting EarnShare, so
+every current holder's EarnShare rises pro rata. Later entrants buy in at the raised price.
 
 Never fund by plain transfer:
 
@@ -63,7 +66,7 @@ Never fund by plain transfer:
 
 So seed every pool with a meaningful operator-held first deposit before it is opened, keep that
 seed in for the life of the pool, and use a protected EarnShare so only eligible accounts can hold
-it. If the headroom is spent anyway, migrating to a fresh engine starts a new baseline.
+it (see also [Timing](#timing)). If the headroom is spent anyway, migrating to a fresh engine starts a new baseline.
 
 ### Fees
 
@@ -75,9 +78,17 @@ excess-return fee charges contribution growth above its target rate.
 
 Contributions are paid on the holdings at the moment they land, and the engine redeems 1:1 at once,
 so the funder must not pay for time nobody held. The example below pays each interval only on the
-smaller of the pool's assets at the interval's start and at its end, so a deposit made just before a
-top-up earns nothing for that interval, and time the pool sat empty is never paid. Contribute often
-(every few minutes) so each step is small.
+smaller of the pool's assets at the interval's start and at its end, so the funder pays nothing for a
+deposit made just before a top-up, and nothing for time the pool sat empty.
+
+That rule protects the funder, not the holders. A contribution is split pro rata over every
+EarnShare when it lands, including EarnShare minted one block earlier, and nothing in the EarnVault
+holds an entrant back or charges an exit. So anyone who deposits just before a predictable top-up
+and redeems just after takes their share of it: depositing ten times the pool takes about 91% of
+that interval's contribution from the holders it was sized for. Principal is never at risk; the
+yield is. Use a protected EarnShare ([access policy](access.md)) so only eligible accounts can
+deposit, or contribute in steps small and frequent enough (every few minutes) that a deposit and
+redemption around one costs more than it captures, or both.
 
 ### Example top-up loop
 
@@ -136,5 +147,6 @@ so the next run retries the same interval instead of skipping it. Start with
 The engine has no factory. Deploy it unbound with the base asset, a setup owner, a name and a
 symbol; deploy the EarnVault with it as an existing engine (`EarnFactory.deploy` rejects an engine
 that is already bound); then the setup owner calls `initializeEarnVault(earnVault, finalOwner)`.
-Seed the pool before opening it (see [Limits on contributions](#limits-on-contributions)). Registry,
-localnet and E2E support for a venue-less kind is not wired yet.
+Seed the pool before opening it (see [Limits on contributions](#limits-on-contributions)). The
+engine registry has no venue-less kind, so the profile lifecycle, localnet and E2E cannot deploy or
+test it.

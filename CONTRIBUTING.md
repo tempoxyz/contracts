@@ -63,7 +63,7 @@ deployments, e2e: run the tooling against profiles that live in another reposito
 ci: run the symbolic proofs on stable Foundry
 ```
 
-Areas are project or top-level directories (`earn`, `zone-router`, `cards`, `e2e`, `localnet`), a shared
+Areas are Solidity domains (`earn`, `zone`, `spend`) or top-level directories (`e2e`, `localnet`), a shared
 or narrower directory (`deployments`, `profiles`), or `ci`, `docs`, `repo`, and `chore`. Pull requests are squash-merged
 with the title as the commit subject, so describe the change and its validation in the body.
 

@@ -6,7 +6,7 @@ owned by [system architecture](../architecture/system.md) and [Earn fees](../arc
 ordering by [flows](../architecture/flows.md), and trust assumptions by
 [security and privacy](../architecture/security-and-privacy.md). TypeScript consumers import the
 ABIs from `@tempoxyz/contracts/abis` ([deployments README](../../../deployments/README.md#exports)). Audit
-scope is in [audits](../audit/README.md#scope).
+scope is in [audits](../../audits.md#coverage).
 
 ## Deployment inventory
 
@@ -23,6 +23,7 @@ scope is in [audits](../audit/README.md#scope).
 | `ERC4626Engine`, `ERC4626EngineFactory`                       | Per stack, network | [ERC-4626](../modules/erc4626-engine.md)                   |
 | `VedaEngine`, `VedaPeripheryRegistry`, `VedaForwardingSolver` | Per Veda stack     | [Veda](../modules/veda.md#contracts)                       |
 | `PropAMMEngine` (experimental)                                | Per stack          | [PropAMM](../modules/propamm.md)                           |
+| `HoldEngine`                                                  | Per stack          | [Hold](../modules/hold.md)                                 |
 | `SingleZoneEarnRouter`                                        | Per Zone route     | [Zones](../modules/zone-router.md#router-contract)         |
 | `EarnContributionController`, `EarnMerkleRewardDistributor`   | Optional per stack | [Rewards](../modules/rewards.md)                           |
 | `EarnRewardsFactory`                                          | Network            | [Rewards installation](../modules/rewards.md#installation) |

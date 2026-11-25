@@ -126,6 +126,14 @@ deposits are inactive, and for an amount below its deposit fee plus its bounce-b
 adds `maxDepositFee` and reverts if the Portal's deposit fee is above it, a cap the Portal does not
 enforce. Any revert bounces the whole input to the withdrawal's fallback recipient in the Zone.
 
+Ops 0 and 1 have no deposit-fee cap, so the Zone admin is trusted on the deposit fee for Earn
+deposits and redemptions. The router hands their whole output to `depositEncrypted`, and the Portal
+charges `FIXED_DEPOSIT_GAS` times `zoneGasRate`, which the admin sets (up to `MAX_GAS_FEE_RATE`) and
+receives, refusing only a return below the fee plus the bounce-back reserve. An admin that raises
+the rate just before processing an Earn withdrawal keeps nearly all of its return; `minEarnShares`
+and `minOutputAmount` bound the output before the fee. The
+[threat model](../threat-models/zone-router.md#accepted-risks) records this.
+
 The router reads each op's tuple in place from calldata rather than copying it to memory. Its
 member reads are bounded by the end of the call's calldata, so the callback data must end it: a
 callback whose length is not whole words (an `abi.encode` result with stray bytes after it)
@@ -270,6 +278,9 @@ the provider's payout target (a Bridge program's spender clone and "TS" handler)
 input. Its checks are in the [card spend design](../spend/design.md#what-the-program-checks).
 
 ## Invariants
+
+The [Zone router threat model](../threat-models/zone-router.md) states these with the code that
+enforces each, and the risks the design accepts.
 
 1. No owner, setters or rescue; the mode is fixed at deployment.
 2. Callbacks accept only the canonical Zone Messenger, the router's Zone and that Zone's

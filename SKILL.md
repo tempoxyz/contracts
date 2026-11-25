@@ -1,6 +1,6 @@
 ---
 name: tempo-earn
-description: Integrate, deploy, or troubleshoot onchain Tempo Earn vaults, EarnShare approvals, and ERC-4626, Veda, or PropAMM engines. Use for applications adding yield through Tempo Earn, not for general investment recommendations or unrelated Tempo payments.
+description: Integrate, deploy, or troubleshoot onchain Tempo Earn vaults, EarnShare approvals, and ERC-4626, Veda, PropAMM, or Hold engines. Use for applications adding yield through Tempo Earn, not for general investment recommendations or unrelated Tempo payments.
 ---
 
 # Tempo Earn

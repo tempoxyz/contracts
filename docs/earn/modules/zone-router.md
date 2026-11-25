@@ -8,7 +8,7 @@ private deposits and redemptions, operators activating a router, and reviewers.
 A profile's separate `zoneRouter` field deploys a different contract beside this one, the
 factory-made [`ZoneRouter`](../../zone/zone-router.md).
 
-Zones are external infrastructure. Audit coverage is in [audits](../audit/README.md#scope). Hosted Zone stacks are listed in
+Zones are external infrastructure. Audit coverage is in [audits](../../audits.md#coverage). Hosted Zone stacks are listed in
 [hosted environments](../../deployment/hosted-environments.md).
 
 ## Router contract
@@ -120,7 +120,9 @@ Success proves the Portal queued the encrypted deposit, not that the Zone has cr
 `minEarnShares` and `minOutputAmount` bound the output before the Portal's deposit fee: the router
 hands the whole output to `depositEncrypted`, and the Portal interface takes no fee cap or post-fee
 minimum. The amount credited in the Zone is the output less any fee the Portal charges, which the
-Zone administrator sets.
+Zone administrator sets and receives. Earn ops have no deposit-fee cap, so the Zone administrator is
+trusted not to raise the fee to take a return
+([threat model](../../threat-models/zone-router.md#accepted-risks)).
 
 If authentication, conversion, the EarnVault call, a bound, or the encrypted return fails, the
 callback reverts and the Zone protocol bounces the original withdrawal back privately; the
@@ -347,6 +349,8 @@ first. For a profile with a Zone, record evidence for each item in the release r
    - [ ] For a conversion router: the pool pair and equal decimals, par oracle and age window,
          deviation guard, inventory owner and funding, and rebalancing process are approved, and the
          pool owner will admit only the final router, with its recipient resolving to itself.
+   - [ ] Whoever can change the Zone's deposit fee (`setZoneGasRate`) is trusted with every Earn
+         return in flight, preferably behind a timelock, since Earn ops have no deposit-fee cap.
 2. **Router is deployed and activated.**
    - [ ] The router is deployed only after the EarnVault and Zone are final, and `pnpm earn verify`
          confirms its source and every immutable (Zone ID, EarnVault, private and vault assets,

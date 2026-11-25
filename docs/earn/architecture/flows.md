@@ -202,8 +202,14 @@ sequenceDiagram
 
     U->>A: contribute(assets)
     A->>F: accrueFees()
-    A->>A: transferFrom(U, A, assets)
-    A->>E: deposit(assets)
+    alt engine has IEarnEngineHeldDeposit
+        A->>A: transferFrom(U, E, assets)
+        A->>E: depositHeld(assets)
+    else
+        A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
+        A->>E: deposit(assets)
+    end
+    A->>A: require reported == measured raw-share increase
     A->>A: add measured engine shares to managed backing
     A->>A: require totalAssets <= maxManagedAssets, when set
     A->>A: re-anchor unchanged EarnShare supply

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -165,17 +165,23 @@ describe('deploy record', () => {
 
 describe('profiles --network', () => {
   test.each(Object.keys(hostedEnvironments))(
-    'lists only the %s profiles',
+    'lists exactly the %s profiles',
     { timeout: 30_000 },
     (network) => {
+      // A network may have no committed profile; its listing is then empty, not an error.
+      const committed = readdirSync(new URL('../../profiles/', import.meta.url), {
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => `profiles/${entry.name}/profile.json`)
+        .filter((path) => {
+          const { chainId } = JSON.parse(
+            readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'),
+          ) as { chainId: number }
+          return hostedEnvironment(chainId)?.id === network
+        })
       const listed = JSON.parse(profiles('--network', network)) as { path: string }[]
-      expect(listed.length).toBeGreaterThan(0)
-      for (const { path } of listed) {
-        const { chainId } = JSON.parse(
-          readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'),
-        ) as { chainId: number }
-        expect(hostedEnvironment(chainId)?.id).toBe(network)
-      }
+      expect(listed.map(({ path }) => path).sort()).toEqual(committed.sort())
     },
   )
 

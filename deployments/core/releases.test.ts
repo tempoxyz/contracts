@@ -11,7 +11,7 @@ import {
 const address = `0x${'1'.repeat(40)}` as const
 
 describe('assertReviewedDeploymentIdentity', () => {
-  test.each(['veda-mainnet', 'veda-moderato', 'e2e-moderato'])(
+  test.each(['veda-moderato', 'e2e-moderato'])(
     'preserves the reviewed historical release of %s',
     (id) => {
       const record = JSON.parse(

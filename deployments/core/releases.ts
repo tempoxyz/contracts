@@ -380,13 +380,6 @@ export type ReviewedDeploymentIdentity = {
 
 // These historical identities were reviewed before current release promotion; records cannot enroll themselves.
 const reviewedDeploymentIdentities: Readonly<Record<string, ReviewedDeploymentIdentity>> = {
-  '4217:veda-mainnet': {
-    deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
-    factories: {
-      earn: getAddress('0x3085A8003f340CD51C72D9e1a1298CDafB171B02'),
-      erc4626Engine: getAddress('0xd43D00981222a8db444A528E69f19E3cE5A7D2Ff'),
-    },
-  },
   '42431:veda-moderato': {
     deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
     factories: {
