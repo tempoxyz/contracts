@@ -126,11 +126,38 @@ describe('stripMetadata', () => {
     expect(stripMetadata(code as `0x${string}`)).toBe(code)
   })
 
+  test('removes the metadata of child creation code a factory embeds before its tail', () => {
+    // Solar puts each tail behind its own INVALID byte; the INVALID bytes stay.
+    expect(stripMetadata(`0x6001fe${tail('aa')}fe${tail('bb')}`)).toBe('0x6001fefe')
+    // Solc's tails are adjacent, behind one INVALID byte.
+    const solc = (hash: string) => `a2646970667358221220${hash.repeat(32)}64736f6c63430008260033`
+    expect(stripMetadata(`0x6001fe${solc('aa')}${solc('bb')}`)).toBe('0x6001fe')
+    expect(stripMetadata(`0x6001fe${solc('aa')}fe${solc('bb')}fe${tail('cc')}`)).toBe(
+      '0x6001fefefe',
+    )
+  })
+
+  test('keeps embedded sections without a source hash', () => {
+    // A boolean-only map is a valid tail, but not an embedded child's metadata.
+    expect(stripMetadata(`0x6001a26178f5617941ab0008fe${tail('aa')}`)).toBe(
+      '0x6001a26178f5617941ab0008fe',
+    )
+    expect(stripMetadata(`0x6001a26178f5617941ab0008${tail('aa')}`)).toBe(
+      '0x6001a26178f5617941ab0008',
+    )
+  })
+
   test('builds that differ only in source text or compiler label share an identity', () => {
     const references = [{ start: 1, length: 1 }]
     const identity = runtimeCodeIdentity(`0x60aa${tail('11')}`, references)
     expect(runtimeCodeIdentity(`0x60bb${tail('22', '000302')}`, references)).toBe(identity)
     expect(runtimeCodeIdentity(`0x61aa${tail('11')}`, references)).not.toBe(identity)
     expect(runtimeCodeIdentity('0x60aa', references)).toBe(identity)
+    // A factory embedding a child whose source text changed keeps its identity, not its code.
+    const factory = runtimeCodeIdentity(`0x60aafe${tail('11')}fe${tail('22')}`, references)
+    expect(runtimeCodeIdentity(`0x60bbfe${tail('33')}fe${tail('44')}`, references)).toBe(factory)
+    expect(runtimeCodeIdentity(`0x60aa61fe${tail('11')}fe${tail('22')}`, references)).not.toBe(
+      factory,
+    )
   })
 })

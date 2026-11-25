@@ -38,7 +38,8 @@ export async function runtimeCodeHashes(
 
 /**
  * Intent components whose recorded replaceable contracts no longer run this checkout's build,
- * compared with immutable slots zeroed and the metadata tail removed, so only a code change counts;
+ * compared with immutable slots zeroed and compiler metadata removed (including that of child
+ * creation code a factory embeds), so only a code change counts;
  * reconciliation replaces them like a changed intent.
  */
 export async function replacedComponents(
