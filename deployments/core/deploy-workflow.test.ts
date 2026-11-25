@@ -60,6 +60,64 @@ describe('deploy workflow', () => {
   })
 })
 
+describe('deploy record', () => {
+  // The collect and apply commands, as the workflow runs them.
+  const line = (pattern: RegExp) => {
+    const match = pattern.exec(workflow)?.[0]
+    if (!match) throw new Error(`No line matching ${pattern}`)
+    return match.trim()
+  }
+  const intentToAdd = line(/^ +git add --intent-to-add .*$/m)
+  const diff = line(/^ +git diff --binary .*$/m).replace(/ > .*$/, '')
+  const stage = line(/^ +git add --all -- deployments.*$/m)
+  const check = line(/^ +if git diff --cached --quiet .*; then$/m).replace(/^if (.*); then$/, '$1')
+
+  const run = (cwd: string, script: string) =>
+    execFileSync('bash', ['-euo', 'pipefail', '-c', script], {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_EMAIL: 'test@example.com',
+        GIT_AUTHOR_NAME: 'test',
+        GIT_COMMITTER_EMAIL: 'test@example.com',
+        GIT_COMMITTER_NAME: 'test',
+      },
+    })
+
+  test("carries a new profile's first record to the record job", () => {
+    const root = mkdtempSync(join(tmpdir(), 'deploy-record-'))
+    try {
+      const repo = (name: string) => {
+        const dir = join(root, name)
+        run(root, `git init -q ${name}`)
+        run(dir, 'mkdir -p deployments/core profiles/old profiles/new')
+        writeFileSync(join(dir, 'deployments/core/releases.ts'), 'export {}\n')
+        writeFileSync(join(dir, 'profiles/old/profile.json'), '{}\n')
+        writeFileSync(join(dir, 'profiles/old/deployment.json'), '{"v":1}\n')
+        writeFileSync(join(dir, 'profiles/new/profile.json'), '{}\n')
+        run(dir, 'git add -A && git commit -qm init')
+        return dir
+      }
+      const network = repo('network')
+      writeFileSync(join(network, 'profiles/old/deployment.json'), '{"v":2}\n')
+      writeFileSync(join(network, 'profiles/new/deployment.json'), '{"v":1}\n')
+      writeFileSync(join(network, 'profiles/new/deployment.pending.json'), '{}\n')
+      const patch = join(root, 'changes.patch')
+      run(network, `${intentToAdd}\n${diff} > ${patch}`)
+      const record = repo('record')
+      run(record, `git apply ${patch}\n${stage}`)
+      expect(() => run(record, check)).toThrow()
+      expect(run(record, 'git diff --cached --name-only').trim().split('\n')).toEqual([
+        'profiles/new/deployment.json',
+        'profiles/old/deployment.json',
+      ])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('profiles --network', () => {
   test.each(Object.keys(hostedEnvironments))(
     'lists only the %s profiles',
