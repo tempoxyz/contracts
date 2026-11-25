@@ -80,8 +80,12 @@ describe('deploy workflow', () => {
       .filter((step) =>
         /^ {6}uses: .*(?:actions\/cache|solar-cache|forge-cache)|^ {8}cache: /m.test(step),
       )
-    expect(cacheSteps).toHaveLength(5)
+    expect(cacheSteps).toHaveLength(6)
     for (const step of cacheSteps) expect(step).toContain("inputs.caches == 'true'")
+    // setup-foundry restores and saves ~/.foundry/cache unless its cache input is false.
+    expect(cacheSteps.find((step) => step.includes('/setup-foundry@'))).toContain(
+      "cache: ${{ inputs.caches == 'true' }}",
+    )
   })
 
   test('runs only from main, in the release environment and hosted-contracts queue', () => {

@@ -11,6 +11,10 @@ const workflow = readFileSync(
   new URL('../../.github/workflows/hosted-e2e.yml', import.meta.url),
   'utf8',
 )
+const setupAction = readFileSync(
+  new URL('../../.github/actions/setup/action.yml', import.meta.url),
+  'utf8',
+)
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
 describe('hosted E2E workflow', () => {
@@ -53,6 +57,10 @@ describe('hosted E2E workflow', () => {
       workflow.match(/uses: \.\/\.github\/actions\/setup\n(?: {8,}.*\n)* {10}caches: 'false'\n/g),
     ).toHaveLength(2)
     expect(workflow.match(/uses: \.\/\.github\/actions\/setup$/gm)).toHaveLength(2)
+    // With caches: 'false', setup-foundry neither restores nor saves ~/.foundry/cache.
+    expect(setupAction).toMatch(
+      /uses: tempoxyz\/gh-actions\/actions\/setup-foundry@.*\n {6}with:\n(?: {8}.*\n)* {8}cache: \$\{\{ inputs\.caches == 'true' \}\}\n/,
+    )
   })
 
   test('resolves every hosted network', () => {
