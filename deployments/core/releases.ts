@@ -219,6 +219,55 @@ export function normalizeImmutableReferences(
   return `0x${normalized.join('')}`
 }
 
+/**
+ * Removes the compiler's trailing CBOR metadata, whose hash covers the source text, so builds that
+ * differ only in comments compare equal. Code without a well-formed tail is returned unchanged.
+ */
+export function stripMetadata(bytecode: Hex): Hex {
+  const code = bytecode.slice(2)
+  if (code.length < 4) return bytecode
+  // The last two bytes give the CBOR length.
+  const start = code.length / 2 - 2 - Number.parseInt(code.slice(-4), 16)
+  if (start < 0 || !isMetadataMap(code.slice(start * 2, -4))) return bytecode
+  return `0x${code.slice(0, start * 2)}`
+}
+
+/** A non-empty CBOR map of text keys to byte strings, text strings, or booleans, filling `hex` exactly. */
+function isMetadataMap(hex: string) {
+  const size = hex.length / 2
+  let at = 0
+  // One item head: its major type and argument (up to two bytes), or undefined past the end.
+  const head = () => {
+    if (at >= size) return undefined
+    const first = Number.parseInt(hex.slice(at * 2, at * 2 + 2), 16)
+    at += 1
+    const info = first & 31
+    const extra = info < 24 ? 0 : info === 24 ? 1 : info === 25 ? 2 : -1
+    if (extra < 0 || at + extra > size) return undefined
+    const argument = extra === 0 ? info : Number.parseInt(hex.slice(at * 2, (at + extra) * 2), 16)
+    at += extra
+    return { major: first >> 5, argument }
+  }
+  const map = head()
+  if (map?.major !== 5 || map.argument === 0) return false
+  for (let entry = 0; entry < map.argument; entry++) {
+    const key = head()
+    if (key?.major !== 3) return false
+    at += key.argument
+    const value = head()
+    if (!value) return false
+    if (value.major === 2 || value.major === 3) at += value.argument
+    // false and true
+    else if (value.major !== 7 || (value.argument !== 20 && value.argument !== 21)) return false
+  }
+  return at === size
+}
+
+/** Runtime code identity: its keccak256 with immutable slots zeroed and the metadata tail removed. */
+export function runtimeCodeIdentity(bytecode: Hex, references: readonly ImmutableReference[]) {
+  return keccak256(stripMetadata(normalizeImmutableReferences(bytecode, references)))
+}
+
 /** Rejects inconsistent copies of one constructor value before those bytes are normalized away. */
 export function assertConsistentImmutableReferences(
   bytecode: Hex,

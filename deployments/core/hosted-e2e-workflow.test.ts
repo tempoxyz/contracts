@@ -30,6 +30,31 @@ describe('hosted E2E workflow', () => {
     expect(workflow).toContain('pnpm e2e:profile "$' + '{arguments[@]}"')
   })
 
+  test('gives the keys only to the run step, after a setup that restores no cache', () => {
+    const lines = workflow.split('\n')
+    const readers = lines.flatMap((line, index) => {
+      const secret = /^ *[A-Z_]+: .*\bsecrets\.([A-Z_]+)/.exec(line)?.[1]
+      if (!secret) return []
+      const step = lines
+        .slice(0, index)
+        .reverse()
+        .find((previous) => /^ {6}- name: /.test(previous))
+      return [{ secret, step: step?.trim(), indent: /^ */.exec(line)![0].length }]
+    })
+    expect(readers).toEqual(
+      ['DEPLOYER_PRIVATE_KEY', 'END_USER_PRIVATE_KEY', 'TEMPO_API_KEY'].map((secret) => ({
+        secret,
+        step: '- name: Run the cases',
+        indent: 10,
+      })),
+    )
+    // Both jobs: the network job's outputs choose the environment the keys come from.
+    expect(
+      workflow.match(/uses: \.\/\.github\/actions\/setup\n(?: {8,}.*\n)* {10}caches: 'false'\n/g),
+    ).toHaveLength(2)
+    expect(workflow.match(/uses: \.\/\.github\/actions\/setup$/gm)).toHaveLength(2)
+  })
+
   test('resolves every hosted network', () => {
     const listed = /for network in ([a-z ]+); do/.exec(workflow)?.[1]?.split(' ')
     expect(listed?.sort()).toEqual(Object.keys(hostedEnvironments).sort())

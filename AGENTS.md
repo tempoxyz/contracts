@@ -96,8 +96,10 @@ writes dominate every path users pay for.
   to zero; the domain guides say where each is allowed. Set an allowance with `approve` first, and
   reset it to zero before setting it only when the token rejects that (reverts, returns false, or
   returns no data).
-- Measure with the gas tests in `test/earn/gas/` and `test/zone/gas/`, on real TIP-20 tokens, after
-  `forge build --force`, and update the baseline with `pnpm gas:update`, never a bare
+- Measure with the real TIP-20 gas tests in `test/spend/gas/`, after `forge build --force`:
+  `FOUNDRY_PROFILE=spend forge test --match-path 'test/spend/gas/*'` rewrites `snapshots/`, the
+  measurement of record. The `test/earn/gas/` and `test/zone/gas/` benchmarks use mock tokens on the
+  plain EVM and miss the new-slot charge; update their baseline with `pnpm gas:update`, never a bare
   `forge snapshot` ([gas baseline](docs/development/README.md#gas-baseline)). Ship an optimization
   only when it saves a meaningful amount (about 1% or more) on a path users pay for, without
   weakening a check, an event, or a proof, and update the docs that quote the measured figures.

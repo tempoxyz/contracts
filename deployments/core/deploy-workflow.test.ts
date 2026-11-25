@@ -11,6 +11,10 @@ const workflow = readFileSync(
   new URL('../../.github/workflows/deploy.yml', import.meta.url),
   'utf8',
 )
+const setupAction = readFileSync(
+  new URL('../../.github/actions/setup/action.yml', import.meta.url),
+  'utf8',
+)
 
 const profiles = (...flags: string[]) =>
   execFileSync(
@@ -37,6 +41,47 @@ describe('deploy workflow', () => {
     expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(2)
     expect(workflow).toContain('deploy+=(--resubmit-verification)')
     expect(workflow).toContain('ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}')
+  })
+
+  test('only simulates unless broadcast is chosen', () => {
+    expect(/^ {6}broadcast:\n(?: {8}.*\n)*? {8}default: (\w+)$/m.exec(workflow)?.[1]).toBe('false')
+  })
+
+  test('gives the keys and RPC credentials only to the steps that send', () => {
+    const deploySteps = [
+      'Deploy the factory releases',
+      'Deploy the ZoneRouterFactory',
+      'Deploy the profiles',
+    ]
+    const readers = secretReaders(workflow)
+    expect(readers.every(({ indent }) => indent === 10)).toBe(true)
+    const stepsReading = (secret: string) =>
+      readers.filter((reader) => reader.secret === secret).map(({ step }) => step)
+    for (const secret of [
+      'DEPLOYER_PRIVATE_KEY',
+      'TEMPO_RPC_URL',
+      'TEMPO_RPC_USERNAME',
+      'TEMPO_RPC_PASSWORD',
+    ])
+      expect(stepsReading(secret), secret).toEqual(deploySteps)
+    expect(stepsReading('ZONE_ADMIN_PRIVATE_KEY')).toEqual(['Deploy the profiles'])
+    expect(new Set(readers.map(({ secret }) => secret)).size).toBe(5)
+  })
+
+  test('restores no dependency or build cache before the keys are used', () => {
+    expect(workflow).toMatch(
+      /uses: \.\/\.github\/actions\/setup\n(?: {8,}.*\n)* {10}caches: 'false'\n/,
+    )
+    expect(workflow).not.toMatch(/uses: \.\/\.github\/actions\/(?:solar|forge)-cache/)
+    // Every cache the setup action restores or saves is off with caches: 'false'.
+    const cacheSteps = setupAction
+      .split('\n  steps:\n')[1]!
+      .split(/\n(?= {4}- )/)
+      .filter((step) =>
+        /^ {6}uses: .*(?:actions\/cache|solar-cache|forge-cache)|^ {8}cache: /m.test(step),
+      )
+    expect(cacheSteps).toHaveLength(5)
+    for (const step of cacheSteps) expect(step).toContain("inputs.caches == 'true'")
   })
 
   test('runs only from main, in the release environment and hosted-contracts queue', () => {
@@ -167,3 +212,19 @@ describe('profiles --network', () => {
     expect(() => profiles('--matrix', '--network', 'moderato')).toThrow('separate modes')
   })
 })
+
+/** Every secret the workflow reads, with its line's indent and the step whose env holds it. */
+function secretReaders(text: string) {
+  const lines = text.split('\n')
+  return lines.flatMap((line, index) => {
+    const match = /^( *)[A-Z_]+: .*\bsecrets\.([A-Z_]+)/.exec(line)
+    if (!match) return []
+    const step = lines
+      .slice(0, index)
+      .reverse()
+      .find((previous) => /^ {6}- name: /.test(previous))
+    return [
+      { indent: match[1]!.length, secret: match[2]!, step: step?.trim().slice('- name: '.length) },
+    ]
+  })
+}

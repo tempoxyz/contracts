@@ -4,6 +4,8 @@ import {
   assertConsistentImmutableReferences,
   assertReviewedDeploymentIdentity,
   resolveEarnFactoryRelease,
+  runtimeCodeIdentity,
+  stripMetadata,
 } from './releases.js'
 
 const address = `0x${'1'.repeat(40)}` as const
@@ -96,5 +98,39 @@ describe('assertConsistentImmutableReferences', () => {
     expect(() => assertConsistentImmutableReferences('0x6000', [[reference]])).toThrow(
       'outside the runtime bytecode',
     )
+  })
+})
+
+describe('stripMetadata', () => {
+  // Solar's tail: {ipfs: <34-byte multihash>, solar: <version>}, then its two-byte length.
+  const tail = (hash: string, version = '000301') =>
+    `a2646970667358221220${hash.repeat(32)}65736f6c617243${version}0034`
+
+  test('removes the CBOR metadata tail', () => {
+    expect(stripMetadata(`0x6001${tail('aa')}`)).toBe('0x6001')
+    // A boolean entry, as solc's experimental flag, and a tail filling the whole code.
+    expect(stripMetadata('0xa26178f5617941ab0008')).toBe('0x')
+  })
+
+  test.each([
+    ['no tail', '0x60aa60bb'],
+    ['a length past the code', '0x6001ffff'],
+    ['a zero length', '0x60010000'],
+    ['a tail that is not a map', '0x6001820102' + '0003'],
+    ['an empty map', '0x6001a0' + '0001'],
+    ['a map shorter than its length', '0x6001a1617802ab00' + '0006'],
+    ['a map longer than its length', '0x6001a1617802abcd' + '0005'],
+    ['a key that is not text', '0x6001a1427802abcd' + '0006'],
+    ['an integer value', '0x6001a1617801' + '0004'],
+  ])('keeps code with %s unchanged', (_, code) => {
+    expect(stripMetadata(code as `0x${string}`)).toBe(code)
+  })
+
+  test('builds that differ only in source text or compiler label share an identity', () => {
+    const references = [{ start: 1, length: 1 }]
+    const identity = runtimeCodeIdentity(`0x60aa${tail('11')}`, references)
+    expect(runtimeCodeIdentity(`0x60bb${tail('22', '000302')}`, references)).toBe(identity)
+    expect(runtimeCodeIdentity(`0x61aa${tail('11')}`, references)).not.toBe(identity)
+    expect(runtimeCodeIdentity('0x60aa', references)).toBe(identity)
   })
 })
