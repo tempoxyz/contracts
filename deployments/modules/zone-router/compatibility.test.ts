@@ -147,6 +147,26 @@ describe('router code identity', () => {
     )
   })
 
+  test('keeps routers whose build differs only in its metadata tail', async () => {
+    // Solar's tail for two source texts: {ipfs: <hash>, solar: 0.3.1}, then its length.
+    const tail = (hash: string) => `a2646970667358221220${hash.repeat(32)}65736f6c6172430003010034`
+    const withTail = () => ({ ...compile(), bytecode: `0x60aa60bb${tail('11')}` as const })
+    const client = deployedAt({
+      [outputs.zoneRouterFactory]: `0x60ff60bb${tail('22')}`,
+      [outputs.zoneRouter]: `0x601160bb${tail('33')}`,
+    })
+    expect(await replacedComponents(client, profile, { addresses: outputs }, withTail)).toEqual(
+      new Set(),
+    )
+    const changed = deployedAt({
+      [outputs.zoneRouterFactory]: `0x60ff60bb${tail('22')}`,
+      [outputs.zoneRouter]: `0x601160cc${tail('11')}`,
+    })
+    expect(await replacedComponents(changed, profile, { addresses: outputs }, withTail)).toEqual(
+      new Set(['zoneRouterFactory', 'zoneRouter']),
+    )
+  })
+
   test('replaces a router built from other code with the components its deployment depends on', async () => {
     const client = deployedAt({
       [outputs.zoneRouterFactory]: '0x60ff60bb',
