@@ -10,7 +10,8 @@ permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A later push to main may be out of scope; it must not cancel an earlier push's in-scope run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Card spend on Tempo: the provider-agnostic contracts (src/spend/) and each provider's (Bridge, Rain),
 # which import Earn and the Zone router from the same Foundry project. Its tests and scripts need

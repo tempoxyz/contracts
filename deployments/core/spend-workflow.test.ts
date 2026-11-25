@@ -15,6 +15,8 @@ describe('spend workflow', () => {
         /^ {4}needs: scope\n {4}if: \$\{\{ needs\.scope\.outputs\.run == 'true' \}\}$/gm,
       ),
     ).toHaveLength(4)
+    // Only pull request runs cancel earlier ones: an out-of-scope push to main would skip every job.
+    expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}")
   })
 
   describe('scope', () => {
