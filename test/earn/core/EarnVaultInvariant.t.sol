@@ -14,6 +14,7 @@ import {
 } from "../../../src/interfaces/earn/EarnFeeTypes.sol";
 import { CoreMockToken, earnVaultTestNoFees } from "../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
+import { RevertRecordingHandler } from "../helpers/RevertRecordingHandler.sol";
 import { IEarnEngine } from "../../../src/interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../../../src/interfaces/earn/engines/IEarnEngineAsyncRedeem.sol";
 import { IEarnEngineExactWithdraw } from "../../../src/interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
@@ -47,6 +48,8 @@ contract ProportionalMockEngine {
     uint256 public totalSupply;
     mapping(address => uint256) public balanceOf;
 
+    error MinimumAssetsNotMet(uint256 minimumAssets, uint256 assets);
+
     constructor(CoreMockToken asset_, uint8 decimals_) {
         assetToken = asset_;
         decimals = decimals_;
@@ -76,7 +79,7 @@ contract ProportionalMockEngine {
         require(balanceOf[msg.sender] >= shares, "SHARES");
 
         assets = shares * totalAssets() / supply;
-        require(assets >= minAssets, "MIN_ASSETS");
+        if (assets < minAssets) revert MinimumAssetsNotMet(minAssets, assets);
         balanceOf[msg.sender] -= shares;
         totalSupply = supply - shares;
         require(assetToken.transfer(receiver, assets), "TRANSFER");
@@ -126,7 +129,7 @@ contract ProportionalMockEngine {
     }
 }
 
-contract EarnVaultHandler is Test {
+contract EarnVaultHandler is RevertRecordingHandler {
     CoreMockToken public immutable asset;
     CoreMockToken public immutable earnShare;
     ProportionalMockEngine public immutable engine;
@@ -149,12 +152,16 @@ contract EarnVaultHandler is Test {
         asset.approve(address(core), assets);
         try core.deposit(assets, address(this), 1) { }
         catch (bytes memory reason) {
-            // Only a restart whose stranded supply is more than one basis point of the entry may refuse it.
-            if (!unbacked || bytes4(reason) != EarnVault.ActiveSupplyWithoutBacking.selector) {
-                assembly {
-                    revert(add(reason, 32), mload(reason))
-                }
-            }
+            // The vault refuses a deposit that mints no shares, loses more than one basis point to rounding, or
+            // overflows its share counts, and a restart whose stranded supply is more than one basis point of
+            // the entry.
+            _expectOnly(
+                reason,
+                EarnVault.InsufficientOutput.selector,
+                EarnVault.ExcessiveConversionLoss.selector,
+                EarnVault.ExceedsMaxEarnShares.selector,
+                unbacked ? EarnVault.ActiveSupplyWithoutBacking.selector : bytes4(0)
+            );
             return;
         }
         uint256 limit = unbacked ? core.rewardRateBaseline() : rateBefore;
@@ -167,7 +174,17 @@ contract EarnVaultHandler is Test {
 
         shares = bound(shares, 1, shareBalance);
         earnShare.approve(address(core), shares);
-        core.redeem(shares, address(this), 1);
+        try core.redeem(shares, address(this), 1) { }
+        catch (bytes memory reason) {
+            // The vault refuses an exit that pays nothing or loses more than one basis point to rounding; the
+            // engine enforces the caller's minimum first.
+            _expectOnly(
+                reason,
+                EarnVault.InsufficientOutput.selector,
+                EarnVault.ExcessiveConversionLoss.selector,
+                ProportionalMockEngine.MinimumAssetsNotMet.selector
+            );
+        }
     }
 
     function withdrawExact(uint256 assets) external {
@@ -182,7 +199,17 @@ contract EarnVaultHandler is Test {
         if (requiredShares == 0 || requiredShares > shareBalance) return;
 
         earnShare.approve(address(core), requiredShares);
-        core.withdrawExact(assets, address(this), shareBalance);
+        try core.withdrawExact(assets, address(this), shareBalance) { }
+        catch (bytes memory reason) {
+            // The vault refuses an exit that pays nothing, loses more than one basis point to rounding, or
+            // would leave backing behind its last managed engine share.
+            _expectOnly(
+                reason,
+                EarnVault.InsufficientOutput.selector,
+                EarnVault.ExcessiveConversionLoss.selector,
+                EarnVault.ResidualBacking.selector
+            );
+        }
     }
 
     function accrueYield(uint256 amount) external {
@@ -196,7 +223,18 @@ contract EarnVaultHandler is Test {
         assets = bound(assets, 1, 1e24);
         asset.mint(address(this), assets);
         asset.approve(address(core), assets);
-        core.contribute(assets);
+        try core.contribute(assets) { }
+        catch (bytes memory reason) {
+            // The vault refuses a contribution that adds no engine shares, overflows its share counts, or would
+            // raise the reward rate past its limit.
+            _expectOnly(
+                reason,
+                EarnVault.InsufficientOutput.selector,
+                EarnVault.ExceedsMaxEarnShares.selector,
+                EarnVault.RewardRateLimitExceeded.selector
+            );
+            return;
+        }
         if (!rewardRateWithinLimit(core)) rewardRateInvariantViolated = true;
     }
 }
@@ -223,7 +261,10 @@ contract FeeEarnVaultHandler is EarnVaultHandler {
     }
 
     function checkpointFees() external {
-        core.accrueFees();
+        try core.accrueFees() { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function accrueLoss(uint256 amount) external {
@@ -250,13 +291,19 @@ contract FeeEarnVaultHandler is EarnVaultHandler {
             excessFeeRateBps: uint16(bound(excessRateBps, 1, 10_000))
         });
         vm.prank(administrator);
-        core.setFeeConfig(config);
+        try core.setFeeConfig(config) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function disableFees() external {
         if (fees.feesDisabled()) return;
         vm.prank(administrator);
-        core.disableFees();
+        try core.disableFees() { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function claimFees(uint256 recipientSeed, uint256 amount) external {
@@ -265,7 +312,10 @@ contract FeeEarnVaultHandler is EarnVaultHandler {
         if (claimable == 0) return;
         amount = bound(amount, 1, claimable);
         vm.prank(recipient);
-        fees.claim(address(this), amount);
+        try fees.claim(address(this), amount) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 }
 
@@ -340,7 +390,7 @@ contract AsyncInvariantEngine {
     }
 }
 
-contract AsyncEarnVaultHandler is Test {
+contract AsyncEarnVaultHandler is RevertRecordingHandler {
     CoreMockToken public immutable asset;
     CoreMockToken public immutable earnShare;
     AsyncInvariantEngine public immutable engine;
@@ -369,12 +419,16 @@ contract AsyncEarnVaultHandler is Test {
         asset.approve(address(core), assets);
         try core.deposit(assets, address(this), 1) { }
         catch (bytes memory reason) {
-            // Only a restart whose stranded supply is more than one basis point of the entry may refuse it.
-            if (!unbacked || bytes4(reason) != EarnVault.ActiveSupplyWithoutBacking.selector) {
-                assembly {
-                    revert(add(reason, 32), mload(reason))
-                }
-            }
+            // The vault refuses a deposit that mints no shares, loses more than one basis point to rounding, or
+            // overflows its share counts, and a restart whose stranded supply is more than one basis point of
+            // the entry.
+            _expectOnly(
+                reason,
+                EarnVault.InsufficientOutput.selector,
+                EarnVault.ExcessiveConversionLoss.selector,
+                EarnVault.ExceedsMaxEarnShares.selector,
+                unbacked ? EarnVault.ActiveSupplyWithoutBacking.selector : bytes4(0)
+            );
             return;
         }
         uint256 limit = unbacked ? core.rewardRateBaseline() : rateBefore;
@@ -386,7 +440,18 @@ contract AsyncEarnVaultHandler is Test {
         assets = bound(assets, 1, 1e24);
         asset.mint(address(this), assets);
         asset.approve(address(core), assets);
-        core.contribute(assets);
+        try core.contribute(assets) { }
+        catch (bytes memory reason) {
+            // The vault refuses a contribution that adds no engine shares, overflows its share counts, or would
+            // raise the reward rate past its limit.
+            _expectOnly(
+                reason,
+                EarnVault.InsufficientOutput.selector,
+                EarnVault.ExceedsMaxEarnShares.selector,
+                EarnVault.RewardRateLimitExceeded.selector
+            );
+            return;
+        }
         if (!rewardRateWithinLimit(core)) rewardRateInvariantViolated = true;
     }
 
@@ -396,7 +461,14 @@ contract AsyncEarnVaultHandler is Test {
         shares = bound(shares, 1, balance);
         earnShare.approve(address(core), shares);
         uint256 heldBefore = core.rawEngineShares();
-        bytes32 requestId = core.requestRedeem(shares, "", address(this));
+        bytes32 requestId;
+        try core.requestRedeem(shares, "", address(this)) returns (bytes32 id) {
+            requestId = id;
+        } catch (bytes memory reason) {
+            // The vault refuses a request that loses more than one basis point to rounding.
+            _expectOnly(reason, EarnVault.InsufficientOutput.selector, EarnVault.ExcessiveConversionLoss.selector);
+            return;
+        }
         uint256 queued = heldBefore - core.rawEngineShares();
         requestIds.push(requestId);
         requestOpen[requestId] = true;
@@ -412,7 +484,13 @@ contract AsyncEarnVaultHandler is Test {
         uint256 rateBefore = core.normalizedRewardRate();
         uint256 rewardBaselineBefore = core.rewardRateBaseline();
         uint256 engineShares = requestEngineShares[requestId];
-        core.cancelRedeem(requestId, 1);
+        try core.cancelRedeem(requestId, 1) { }
+        catch (bytes memory reason) {
+            // The vault refuses a cancel whose returned shares lose more than one basis point to rounding; the
+            // request stays open for the engine to settle.
+            _expectOnly(reason, EarnVault.InsufficientOutput.selector, EarnVault.ExcessiveConversionLoss.selector);
+            return;
+        }
         if (activePoolWasNonempty && core.normalizedRewardRate() > rateBefore) {
             rewardRateInvariantViolated = true;
         }
@@ -426,7 +504,11 @@ contract AsyncEarnVaultHandler is Test {
         bytes32 requestId = _openRequest(seed);
         if (requestId == bytes32(0)) return;
         uint256 engineShares = requestEngineShares[requestId];
-        engine.settle(requestId);
+        try engine.settle(requestId) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+            return;
+        }
         requestOpen[requestId] = false;
         openRequests -= 1;
         pendingEngineShares -= engineShares;
@@ -499,6 +581,10 @@ contract FeeEarnVaultInvariantTest is StdInvariant, Test {
         assertFalse(handler.rewardRateInvariantViolated());
     }
 
+    function invariant_actionsRevertOnlyWithExpectedErrors() public view {
+        assertFalse(handler.revertedUnexpectedly(), vm.toString(handler.unexpectedRevertReason()));
+    }
+
     function invariant_feeCustodyEqualsRecordedClaims() public view {
         // EarnFees holds every recorded claim plus the unit the vault minted it at initialization.
         assertEq(earnShare.balanceOf(address(fees)), fees.totalClaimableEarnShares() + 1);
@@ -552,6 +638,10 @@ contract AsyncEarnVaultInvariantTest is StdInvariant, Test {
 
     function invariant_rewardAdmissionsAndEntriesPreserveRatePolicy() public view {
         assertFalse(handler.rewardRateInvariantViolated());
+    }
+
+    function invariant_actionsRevertOnlyWithExpectedErrors() public view {
+        assertFalse(handler.revertedUnexpectedly(), vm.toString(handler.unexpectedRevertReason()));
     }
 
     function invariant_openRequestCountMatchesHandlerBookkeeping() public view {

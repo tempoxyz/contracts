@@ -11,8 +11,9 @@ import { VedaEngine } from "../../../../src/earn/engines/veda/VedaEngine.sol";
 import { OnChainWithdraw } from "../../../../src/interfaces/external/veda/VedaTypes.sol";
 import { VedaEngineTestBase } from "../../helpers/VedaEngineTestBase.sol";
 import { MockAsset, MockBoringVault, MockCore, MockQueue } from "../../helpers/VedaEngineMocks.sol";
+import { RevertRecordingHandler } from "../../helpers/RevertRecordingHandler.sol";
 
-contract VedaClaimLedgerHandler is Test {
+contract VedaClaimLedgerHandler is RevertRecordingHandler {
     uint256 private constant MAX_REQUESTS = 32;
 
     MockAsset public immutable asset;
@@ -44,13 +45,20 @@ contract VedaClaimLedgerHandler is Test {
         if (requestIds.length >= MAX_REQUESTS) return;
         uint128 shares = uint128(bound(rawShares, 1, 1e18));
         vault.mint(address(engine), shares);
-        requestIds.push(core.requestRedeem(shares, address(asset), 0, 3600));
+        try core.requestRedeem(shares, address(asset), 0, 3600) returns (bytes32 id) {
+            requestIds.push(id);
+        } catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function cancel(uint256 seed) external {
         bytes32 id = _find(seed, VedaEngine.ClaimStatus.Open, VedaEngine.ClaimStatus.None);
         if (id == bytes32(0)) return;
-        core.cancelRedeem(id);
+        try core.cancelRedeem(id) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function solve(uint256 seed, bool failFinalize, uint128 rawSurplus) external {
@@ -64,14 +72,20 @@ contract VedaClaimLedgerHandler is Test {
 
         bytes32[] memory ids = new bytes32[](1);
         ids[0] = id;
-        engine.forwardSolved(ids, address(asset), delivered);
+        try engine.forwardSolved(ids, address(asset), delivered) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
         core.setRevertFinalize(false);
     }
 
     function claim(uint256 seed) external {
         bytes32 id = _find(seed, VedaEngine.ClaimStatus.Claimable, VedaEngine.ClaimStatus.None);
         if (id == bytes32(0)) return;
-        engine.claimRedeem(id);
+        try engine.claimRedeem(id) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function sweepSurplus(uint256 rawAmount) external {
@@ -81,7 +95,10 @@ contract VedaClaimLedgerHandler is Test {
         if (balance <= reserved) return;
         uint256 amount = bound(rawAmount, 1, balance - reserved);
         vm.prank(engineOwner);
-        engine.sweepDust(address(asset), address(this), amount);
+        try engine.sweepDust(address(asset), address(this), amount) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function requestCount() external view returns (uint256) {
@@ -126,6 +143,10 @@ contract VedaClaimLedgerInvariantTest is VedaEngineTestBase {
 
         targetContract(address(handler));
         targetSelector(FuzzSelector({ addr: address(handler), selectors: selectors }));
+    }
+
+    function invariant_actionsRevertOnlyWithExpectedErrors() public view {
+        assertFalse(handler.revertedUnexpectedly(), vm.toString(handler.unexpectedRevertReason()));
     }
 
     function invariant_settledEqualsClaimableLedger() public view {

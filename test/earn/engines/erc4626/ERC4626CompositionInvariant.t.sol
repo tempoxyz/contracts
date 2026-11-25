@@ -15,9 +15,10 @@ import {
 } from "../../../../src/interfaces/earn/EarnFeeTypes.sol";
 import { CoreMockToken } from "../../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../../helpers/EarnVaultTestDeployer.sol";
+import { RevertRecordingHandler } from "../../helpers/RevertRecordingHandler.sol";
 
 /// @dev Drives only valid, complete user and venue transitions so custody can be checked at call boundaries.
-contract ERC4626CompositionHandler is Test {
+contract ERC4626CompositionHandler is RevertRecordingHandler {
     CoreMockToken public immutable asset;
     CoreMockToken public immutable earnShare;
     Simple4626Vault public immutable venue;
@@ -56,20 +57,24 @@ contract ERC4626CompositionHandler is Test {
     function deposit(uint256 actorSeed, uint256 assets) external {
         address actor = _actor(actorSeed);
         assets = bound(assets, 1, 1e18);
-        earnVault.accrueFees();
+        _checkpointFees();
 
         uint256 venueShares = venue.convertToShares(assets);
         if (!_acceptableEntry(venueShares)) return;
 
         asset.mint(actor, assets);
+        bool unbacked = _unbacked();
         vm.prank(actor);
-        earnVault.deposit(assets, actor, 1);
+        try earnVault.deposit(assets, actor, 1) { }
+        catch (bytes memory reason) {
+            _expectRestartRefusal(reason, unbacked);
+        }
     }
 
     function depositVenueShares(uint256 actorSeed, uint256 assets) external {
         address actor = _actor(actorSeed);
         assets = bound(assets, 1, 1e18);
-        earnVault.accrueFees();
+        _checkpointFees();
 
         uint256 expectedVenueShares = venue.convertToShares(assets);
         if (!_acceptableEntry(expectedVenueShares)) return;
@@ -77,8 +82,12 @@ contract ERC4626CompositionHandler is Test {
         asset.mint(actor, assets);
         vm.prank(actor);
         uint256 venueShares = venue.deposit(assets, actor);
+        bool unbacked = _unbacked();
         vm.prank(actor);
-        earnVault.depositVenueShares(venueShares, actor, 1);
+        try earnVault.depositVenueShares(venueShares, actor, 1) { }
+        catch (bytes memory reason) {
+            _expectRestartRefusal(reason, unbacked);
+        }
     }
 
     function donateYield(uint256 assets) external {
@@ -102,28 +111,35 @@ contract ERC4626CompositionHandler is Test {
         if (earnVault.totalEarnShares() == 0) return;
 
         assets = bound(assets, 1, 1e18);
-        earnVault.accrueFees();
+        _checkpointFees();
         if (venue.convertToShares(assets) == 0) return;
 
         asset.mint(address(this), assets);
-        earnVault.contribute(assets);
+        try earnVault.contribute(assets) { }
+        catch (bytes memory reason) {
+            // The vault refuses a contribution that would raise the reward rate past its limit.
+            _expectOnly(reason, EarnVault.RewardRateLimitExceeded.selector);
+        }
     }
 
     function redeem(uint256 actorSeed, uint256 earnShares) external {
         address actor = _actor(actorSeed);
-        earnVault.accrueFees();
+        _checkpointFees();
         uint256 balance = earnShare.balanceOf(actor);
         if (balance == 0) return;
 
         earnShares = bound(earnShares, 1, balance);
         if (earnVault.previewRedeem(earnShares) == 0) return;
         vm.prank(actor);
-        earnVault.redeem(earnShares, actor, 1);
+        try earnVault.redeem(earnShares, actor, 1) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function withdrawExact(uint256 actorSeed, uint256 assets) external {
         address actor = _actor(actorSeed);
-        earnVault.accrueFees();
+        _checkpointFees();
         uint256 balance = earnShare.balanceOf(actor);
         if (balance == 0) return;
 
@@ -134,11 +150,22 @@ contract ERC4626CompositionHandler is Test {
         uint256 requiredEarnShares = earnVault.previewWithdraw(assets);
         if (requiredEarnShares == 0 || requiredEarnShares > balance) return;
         vm.prank(actor);
-        earnVault.withdrawExact(assets, actor, requiredEarnShares);
+        try earnVault.withdrawExact(assets, actor, requiredEarnShares) { }
+        catch (bytes memory reason) {
+            // The vault refuses an exact withdrawal that would leave backing behind its last managed engine share.
+            _expectOnly(reason, EarnVault.ResidualBacking.selector);
+        }
     }
 
     function checkpointFees() external {
-        earnVault.accrueFees();
+        _checkpointFees();
+    }
+
+    function _checkpointFees() private {
+        try earnVault.accrueFees() { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
     }
 
     function advanceTime(uint256 elapsed) external {
@@ -152,7 +179,20 @@ contract ERC4626CompositionHandler is Test {
 
         amount = bound(amount, 1, claimable);
         vm.prank(recipient);
-        fees.claim(address(this), amount);
+        try fees.claim(address(this), amount) { }
+        catch (bytes memory reason) {
+            _expectOnly(reason);
+        }
+    }
+
+    /// @dev Whether a deposit now restarts supply that has no backing, like an empty pool.
+    function _unbacked() private view returns (bool) {
+        return earnVault.totalEarnShares() != 0 && earnVault.totalAssets() == 0;
+    }
+
+    /// @dev Only a restart whose stranded supply is more than one basis point of the entry may refuse it.
+    function _expectRestartRefusal(bytes memory reason, bool unbacked) private {
+        _expectOnly(reason, unbacked ? EarnVault.ActiveSupplyWithoutBacking.selector : bytes4(0));
     }
 
     function _acceptableEntry(uint256 venueShares) private view returns (bool) {
@@ -229,6 +269,10 @@ contract ERC4626CompositionInvariantTest is StdInvariant, Test {
         } else {
             assertEq(earnVault.previewRedeem(projectedSupply), managedAssets);
         }
+    }
+
+    function invariant_actionsRevertOnlyWithExpectedErrors() public view {
+        assertFalse(handler.revertedUnexpectedly(), vm.toString(handler.unexpectedRevertReason()));
     }
 
     function invariant_engineOwnsAllVenueShares() public view {
