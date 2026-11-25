@@ -58,7 +58,7 @@ sequenceDiagram
     A->>T: mint(receiver, earnShares)
     A->>A: keep only represented shares managed; re-anchor
     A->>A: require totalAssets <= maxManagedAssets, when set
-    A->>F: initializeBaselines(), while fees are active
+    A->>F: initializeBaselines(), or reopenBaselines() into an empty pool, while fees are active
 ```
 
 The EarnVault keeps a copy of `feesActive()`, refreshed by every call that can change it (all of which
@@ -146,7 +146,7 @@ sequenceDiagram
     A->>A: convert; check minEarnShares and 1-bp floor loss
     A->>T: mint(receiver, earnShares)
     A->>A: keep only represented shares managed; re-anchor; check maxManagedAssets
-    A->>F: initializeBaselines()
+    A->>F: initializeBaselines(), or reopenBaselines() into an empty pool
 ```
 
 The rules match a base-asset deposit: the EarnVault checkpoints before principal enters, mints
@@ -230,7 +230,10 @@ Optional supply-bounded orchestration around `contribute` is in
 
 1. The caller approves `earnShares` to the EarnVault and calls
    `requestRedeem(earnShares, receiver, engineData)`; the engine must advertise
-   `IEarnEngineAsyncRedeem`.
+   `IEarnEngineAsyncRedeem`. The payout and any cancellation's re-entry go only to `receiver`, so a
+   receiver that could never take them reverts with `InvalidReceiver`: the EarnVault, its engine, or
+   a TIP-20 token address (the reserved `0x20C000000000000000000000` prefix), as well as zero
+   (`ZeroAddress`).
 2. `A` checkpoints fees.
 3. `A` converts the EarnShare to engine shares, rounding down, and reverts with
    `ExcessiveConversionLoss` if converting them back leaves more than one basis point of the
