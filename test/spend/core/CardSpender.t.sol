@@ -632,8 +632,8 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         assertEq(usd.balanceOf(pooledWallet), 10e6);
     }
 
-    /// @dev On the private direct path the vault enforces `maxShares` as its cap; a payout target enforces it
-    ///      itself (Bridge's handler does, with its own `ShareCostExceeded`).
+    /// @dev On the private direct path the vault enforces `maxShares` as its cap; on the payout path the program
+    ///      checks the quoted cost against it before paying.
     function test_revert_spendFrom_earnShareCostAboveMaxShares() public {
         uint256 shares = _depositEarn(router, 100e6);
         CardSpend memory s = _earnSpend(pooledWallet, 0, 10e6, 10e6, "cap.private");
@@ -688,6 +688,33 @@ contract CardSpenderPayoutTest is CardSpenderBehavior {
         vm.prank(router);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, e.maxShares, cost));
         program.spendFrom(address(earnShare), e.maxShares, abi.encode(e));
+    }
+
+    /// @dev A private Earn payout whose quoted share cost exceeds `maxShares` is refused before the target runs,
+    ///      even though `maxInput` covers it and the target itself does not check `maxShares`.
+    function test_revert_spendFrom_payoutShareCostAboveMaxShares() public {
+        uint256 shares = _depositEarn(router, 100e6);
+        CardSpend memory s = _earnSpend(pooledWallet, 0, 10e6, 10e6, "cap.payout");
+        uint256 cost = earnVault.previewWithdraw(10e6);
+        s.maxShares = cost - 1;
+        vm.prank(router);
+        earnShare.transfer(address(program), shares);
+        vm.expectCall(address(target), abi.encodeWithSelector(MockPayoutTarget.pay.selector), 0);
+        vm.prank(router);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.ShareCostExceeded.selector, cost, cost - 1));
+        program.spendFrom(address(earnShare), shares, abi.encode(s));
+    }
+
+    /// @dev At exactly `maxShares` the private Earn payout goes through and burns the quoted cost.
+    function test_spendFrom_payoutShareCostAtMaxShares() public {
+        uint256 shares = _depositEarn(router, 100e6);
+        CardSpend memory s = _earnSpend(pooledWallet, 0, 10e6, 10e6, "cap.payout.eq");
+        uint256 cost = earnVault.previewWithdraw(10e6);
+        s.maxShares = cost;
+        uint256 routerBefore = earnShare.balanceOf(router);
+        _routerSpend(address(earnShare), shares, s);
+        assertEq(usd.balanceOf(pooledWallet), 10e6);
+        assertEq(earnShare.balanceOf(router), routerBefore - cost, "router charged exactly the quoted cost");
     }
 
     /// @dev A target that pays the destination from its own funds consumes nothing: a private Earn spend is

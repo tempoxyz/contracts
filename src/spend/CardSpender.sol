@@ -171,6 +171,8 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
             // At most the share cost quoted before the payout: a target can neither keep the rest of the input
             // nor burn more shares than the amount costs and keep the surplus assets.
             expected = ITempoEarnVault(s.vault).previewWithdraw(s.fromVault);
+            if (s.maxShares != 0 && expected > s.maxShares) revert ShareCostExceeded(expected, s.maxShares);
+            /// @custom:assert s.maxShares == 0 || expected <= s.maxShares
             _payout(s, token, address(0));
         }
 
