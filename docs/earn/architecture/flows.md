@@ -268,7 +268,10 @@ The venue delivers assets to the engine, which transfers them to the EarnVault a
 engine, the asset to be its base asset, and the request to be open. It closes the claim, decrements
 `openRedeemRequestCount`, closes the fee snapshot if the request recorded one, forwards `amount` to
 the stored receiver, and, if the receiver has code, calls `onRedeemFinalized` inside a `try`, so a
-reverting receiver cannot block finalization. There is no burn or fee checkpoint. Veda's forwarding
+reverting receiver cannot block finalization. The hook is best-effort: it gets 63/64 of the gas left
+after the payout, and a hook that reverts or runs out of gas is not retried, because the claim is
+already paid. Veda's batch solve caps each payout at 2,000,000 gas, so there the hook gets roughly
+63/64 of what remains of that after the payout. There is no burn or fee checkpoint. Veda's forwarding
 solver makes the venue solve, measured engine credit, and finalization atomic
 ([Veda queued exits](../modules/veda.md#queued-exits)).
 

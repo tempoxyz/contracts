@@ -19,7 +19,8 @@ Use [the package reference](README.md), [profiles](../profiles/README.md), and t
 - The lifecycle owns reconciliation and verified records; the stack a hosted E2E run builds from a
   profile is a separate projection. Never edit outputs to get past verification.
 - Zone routers are replaced when their recorded runtime differs from this checkout's build, apart
-  from immutables and the metadata tail; never bump a release number to force one, and keep the
+  from immutables and compiler metadata (the trailing tail and that of the router creation code the
+  factory embeds); never bump a release number to force one, and keep the
   frozen legacy intent values that hold existing record hashes. Replacing a router leaves the old one's pool and Portal grants for their owners to
   [revoke](../docs/deployment/deployment.md#replaced-zone-routers).
 - Never hand-write a contract ABI in TypeScript: import it from `@tempoxyz/contracts/abis` and

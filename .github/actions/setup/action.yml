@@ -20,8 +20,8 @@ inputs:
   caches:
     description: >-
       'false' restores and saves no cache, for jobs that hold signing keys: solar is downloaded and
-      checked against solar-releases.json, Forge builds from scratch, and pnpm installs from the
-      registry.
+      checked against solar-releases.json, Forge builds from scratch, Foundry keeps no RPC cache, and
+      pnpm installs from the registry.
     default: 'true'
 runs:
   using: composite
@@ -38,6 +38,8 @@ runs:
       uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       with:
         version: v1.8.6
+        # Foundry's RPC cache (~/.foundry/cache) follows the caches input like every other cache.
+        cache: ${{ inputs.caches == 'true' }}
 
     - if: inputs.forge-cache != '' && inputs.caches == 'true'
       uses: ./.github/actions/forge-cache

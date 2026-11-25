@@ -167,6 +167,33 @@ describe('router code identity', () => {
     )
   })
 
+  test('keeps a factory whose embedded router differs only in its metadata', async () => {
+    const tail = (hash: string) => `a2646970667358221220${hash.repeat(32)}65736f6c6172430003010034`
+    // The factory runtime ends with the router's creation code, then its own tail, each behind INVALID.
+    const factory = (child: string, hashes: [string, string]) =>
+      `0x60aa60bb${child}fe${tail(hashes[0])}fe${tail(hashes[1])}` as const
+    const build = (contract: string) => ({
+      ...compile(),
+      bytecode: contract.endsWith(':ZoneRouterFactory')
+        ? factory('6001', ['11', '22'])
+        : (`0x60aa60bb${tail('66')}` as const),
+    })
+    const client = deployedAt({
+      [outputs.zoneRouterFactory]: factory('6001', ['33', '44']).replace('60aa', '60ff'),
+      [outputs.zoneRouter]: `0x601160bb${tail('55')}`,
+    })
+    expect(await replacedComponents(client, profile, { addresses: outputs }, build)).toEqual(
+      new Set(),
+    )
+    const changed = deployedAt({
+      [outputs.zoneRouterFactory]: factory('6002', ['11', '22']),
+      [outputs.zoneRouter]: `0x601160bb${tail('55')}`,
+    })
+    expect(await replacedComponents(changed, profile, { addresses: outputs }, build)).toEqual(
+      new Set(['zoneRouterFactory']),
+    )
+  })
+
   test('replaces a router built from other code with the components its deployment depends on', async () => {
     const client = deployedAt({
       [outputs.zoneRouterFactory]: '0x60ff60bb',
