@@ -130,16 +130,10 @@ target(t) = targetBase + targetBase × annualTargetRateBps / 10,000 × (t - targ
 Missed target growth carries forward. Whenever post-fee value exceeds the grown target, the target
 base resets to that value and its clock restarts, so the same excess is never charged twice.
 
-Values per EarnShare (the high-water mark, the target, `FeePreview`'s per-EarnShare fields and the
-values in `FeesAccrued` and `FeeBaselinesInitialized`) are asset units per whole EarnShare times
-10^18, so one value unit is 10^-18 of an asset unit per EarnShare. Stored baselines round up to the
-next value unit. This treats an indivisible value band as already checkpointed, so repeated
-permissionless checkpoints cannot charge it twice; rounding never increases a holder's fee. Each
-checkpoint also floors its positive accrual to whole asset units, so checkpointing more often can
-leave less than one asset unit of accrual uncharged per checkpoint, and nothing more: the fees of
-many checkpoints match those of one checkpoint over the same growth within one asset unit each.
-Request snapshots store values in asset units, rounded up, so a snapshot can leave less than one
-asset unit uncharged.
+Stored baselines round up to the next representable per-EarnShare value. This treats an indivisible
+value band as already checkpointed, so repeated permissionless checkpoints cannot charge it twice.
+Each baseline advance may leave up to one per-EarnShare unit uncharged, and callers can compound
+that by checkpointing sub-precision growth repeatedly; rounding never increases a holder's fee.
 
 After a base-asset or in-kind deposit into a live pool, `EarnFees.initializeBaselines` raises the
 high-water mark, and an excess target, to the post-entry value when that is higher. Baselines never

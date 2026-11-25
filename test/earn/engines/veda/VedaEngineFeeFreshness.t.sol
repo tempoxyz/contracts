@@ -110,7 +110,7 @@ contract VedaEngineFeeFreshnessTest is VedaEngineTestBase {
         assertEq(feeAssets, 0);
         assertEq(feeEarnShares, 0);
         assertFalse(earnFees.feeBaselinesPending());
-        assertEq(earnFees.highWaterMark(), 1_100_000 * 1e18);
+        assertEq(earnFees.highWaterMark(), 1_100_000);
         assertEq(earnFees.claimableEarnShares(FEE_RECIPIENT), 0);
 
         accountant.setRate(1_210_000);
