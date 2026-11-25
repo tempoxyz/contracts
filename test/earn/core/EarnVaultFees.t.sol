@@ -281,18 +281,41 @@ contract EarnVaultFeesTest is Test {
         assertGe(cadenceFeeEarnShares + charges, singleFeeEarnShares);
     }
 
-    function testConfigChangeNeverChargesEarlierWaitingGrowthUnderNewTerms() public {
+    function testConfigChangeSettlesWaitingGrowthUnderOldTerms() public {
         address newRecipient = address(0xBEEF);
-        // Half a step of growth waits when the recipient changes; only growth after the change goes to the new one.
+        // 100M at six decimals, so one step is 100e6 asset units. Half a step waits when the recipient changes: the
+        // old recipient is charged for it, and only growth after the change goes to the new one.
         _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
-        _deposit(user, 100_000_000);
-        asset.mint(address(venue), 50);
+        _deposit(user, 100_000_000e6);
+        asset.mint(address(venue), 50e6);
         earnVault.setFeeConfig(_fixedConfig(newRecipient, 1_000));
-        assertEq(fees.claimableEarnShares(fixedRecipient), 0);
-        asset.mint(address(venue), 300);
+        assertApproxEqAbs(earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient)), 5e6, 2);
+        assertLe(_waitingAccrual(6), 1);
+        asset.mint(address(venue), 300e6);
         (uint256 newFeeAssets,) = earnVault.accrueFees();
-        // Charged and still waiting together are 10% of the 300 units after the change, not of the 350 in all.
-        assertEq(newFeeAssets + _waitingAccrual(6) / 10, 30);
+        assertApproxEqAbs(newFeeAssets + _waitingAccrual(6) / 10, 30e6, 1);
+    }
+
+    function testRepeatedConfigReinstallsChargeTheSameFees() public {
+        // Without changes: ten half steps of growth charged at the end.
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_000e6);
+        asset.mint(address(venue), 500e6);
+        earnVault.accrueFees();
+        uint256 singleFeeValue = earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient));
+
+        // Reinstalling the same configuration every half step settles each half step instead of erasing it.
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_000e6);
+        for (uint256 i = 0; i < 10; i++) {
+            asset.mint(address(venue), 50e6);
+            earnVault.setFeeConfig(_fixedConfig(fixedRecipient, 1_000));
+        }
+        uint256 reinstallFeeValue = earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient));
+        assertApproxEqAbs(singleFeeValue, 50e6, 2);
+        // Fee EarnShare minted earlier also earns the later growth, so settling more often pays slightly more.
+        assertGe(reinstallFeeValue + 20, singleFeeValue);
+        assertLe(reinstallFeeValue, singleFeeValue + singleFeeValue / 100_000);
     }
 
     function testDepositOneSecondAfterYieldWritesNoFeeState() public {

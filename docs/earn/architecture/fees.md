@@ -288,8 +288,8 @@ Acceptance cancels any update the previous distributor scheduled but keeps the a
 
 Every installed configuration receives the next ID and stays readable through `feeConfig(configId)`.
 Each change settles the old terms first and applies only prospectively, so new rates never reach
-earlier uncheckpointed growth or deposited principal. Accrual the old terms left waiting below one
-step is forgone: the change raises the high-water mark over it, so the new terms never charge it. Integrators must disclose and monitor both
+earlier uncheckpointed growth or deposited principal. The checkpoint before a change settles the old
+terms in full: accrual still waiting below one step is charged under them too, in whole asset units. Integrators must disclose and monitor both
 authorities, their handoffs, and every pending update.
 
 `disableFees` is the operator's emergency stop for stacks without a distributor. It does not read

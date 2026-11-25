@@ -446,7 +446,7 @@ contract EarnVault is IEarnVault {
         if (msg.sender != operator) revert NotOperator();
         _validateOperatorFeeConfig(config);
         _requireFreshFeeValuation();
-        _accrueFees();
+        _settleFees();
         configId = IEarnFees(earnFees).setFeeConfig(config);
         _refreshFeesActive();
     }
@@ -555,7 +555,7 @@ contract EarnVault is IEarnVault {
         IEarnFees(earnFees).validateFeeConfig(proposed);
 
         _requireFreshFeeValuation();
-        _accrueFees();
+        _settleFees();
         _distributorFee = nextFee;
         delete _pendingDistributorFeeUpdate;
         feeConfigId = IEarnFees(earnFees).setFeeConfig(proposed);
@@ -886,7 +886,7 @@ contract EarnVault is IEarnVault {
         // The contribution changes no supply, so the checkpoint's supply still holds, and the second checkpoint
         // reuses the raw count and the backing's value the limit just read.
         _reanchorAtRestRaw(raw, supply);
-        _accrueFeesAt(raw, supply, value, valued);
+        _accrueFeesAt(raw, supply, value, valued, false);
         _requireRewardRateWithinLimit();
 
         (uint256 anchorEngine, uint256 anchorEarn) = _anchor();
@@ -923,7 +923,7 @@ contract EarnVault is IEarnVault {
         /// @custom:assert _maxManagedAssets == 0 || _specManagedValueAt(raw) <= _maxManagedAssets
 
         _reanchorAtRestRaw(raw, supply);
-        _accrueFeesAt(raw, supply, value, valued);
+        _accrueFeesAt(raw, supply, value, valued, false);
         _requireRewardRateWithinLimit();
 
         (uint256 anchorEngine, uint256 anchorEarn) = _anchor();
@@ -2116,13 +2116,20 @@ contract EarnVault is IEarnVault {
     function _accrueFees() internal returns (Checkpoint memory c) {
         // Neither the checkpoint nor the fee mint moves engine shares, so one raw read serves both.
         uint256 raw = rawEngineShares();
-        return _accrueFeesAt(raw, _activeSupply(), 0, false);
+        return _accrueFeesAt(raw, _activeSupply(), 0, false, false);
+    }
+
+    /// @dev A fee checkpoint that settles the current configuration in full, waiting accrual included, before it is
+    ///      replaced, so a new configuration never charges growth earned under the old one.
+    function _settleFees() internal returns (Checkpoint memory c) {
+        uint256 raw = rawEngineShares();
+        return _accrueFeesAt(raw, _activeSupply(), 0, false, true);
     }
 
     /// @dev {_accrueFees} at the engine's raw share count and the active supply the caller just read. A caller that
     ///      already valued the managed backing min(raw, managed) passes that value as `knownValue` with `known`.
     ///      While fees are off EarnFees would return an empty result, so the call is skipped.
-    function _accrueFeesAt(uint256 raw, uint256 supplyBefore, uint256 knownValue, bool known)
+    function _accrueFeesAt(uint256 raw, uint256 supplyBefore, uint256 knownValue, bool known, bool settle)
         internal
         returns (Checkpoint memory c)
     {
@@ -2137,8 +2144,9 @@ contract EarnVault is IEarnVault {
                 c.value = known ? knownValue : IEarnEngine(engine).valueOf(raw < managed ? raw : managed);
                 c.valued = true;
             }
-            (c.feeAssets, c.feeEarnShares, c.baselineFloor, c.floorScale) =
-                IEarnFees(earnFees).accrueFees(supplyBefore, c.value, fresh);
+            (c.feeAssets, c.feeEarnShares, c.baselineFloor, c.floorScale) = settle
+                ? IEarnFees(earnFees).settleFees(supplyBefore, c.value, fresh)
+                : IEarnFees(earnFees).accrueFees(supplyBefore, c.value, fresh);
             if (c.feeEarnShares != 0) {
                 IEarnShare(earnShare).mint(earnFees, c.feeEarnShares);
             }
