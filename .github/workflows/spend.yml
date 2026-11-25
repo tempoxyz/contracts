@@ -9,8 +9,9 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # A later push to main may be out of scope; it must not cancel an earlier push's in-scope run.
+  # A later push to main may be out of scope, so it must neither cancel an earlier push's run nor
+  # replace it while pending: each push gets its own group, and pull requests cancel earlier runs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Card spend on Tempo: the provider-agnostic contracts (src/spend/) and each provider's (Bridge, Rain),

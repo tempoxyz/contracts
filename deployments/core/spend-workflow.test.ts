@@ -17,6 +17,10 @@ describe('spend workflow', () => {
     ).toHaveLength(4)
     // Only pull request runs cancel earlier ones: an out-of-scope push to main would skip every job.
     expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}")
+    // Each push to main has its own group, so a later push never replaces an earlier pending run.
+    expect(workflow).toContain(
+      "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}",
+    )
   })
 
   describe('scope', () => {
