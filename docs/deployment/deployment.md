@@ -655,8 +655,8 @@ network to what `main` describes in one dispatch: every shared factory release (
 <network> all`), the Zone router release's `ZoneRouterFactory`, then `pnpm earn deploy` for every
 committed profile on that network (`pnpm profiles --network <network>`, which lists them without
 checking records, so a record a release outdated is redeployed rather than refused). Choose
-`both` (Moderato, then mainnet only after Moderato succeeds), one network, and whether to broadcast;
-without broadcast it simulates the releases and prints each profile's plan. With broadcast,
+`both` (Moderato, then mainnet only after Moderato succeeds), one network, and whether to broadcast
+(off by default); without broadcast it simulates the releases and prints each profile's plan. With broadcast,
 `resubmit-verification` passes `--resubmit-verification` to every release and profile deploy, for a
 verifier entry that differs from the recorded deployment ([repair limits](#source-verification)).
 

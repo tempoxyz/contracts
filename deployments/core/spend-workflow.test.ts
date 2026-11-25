@@ -77,7 +77,7 @@ describe('spend workflow', () => {
     test('counts a file moved out of scope', async () => {
       expect(
         await scope('pull_request', [
-          { filename: 'docs/x.md', previous_filename: 'docs/spend/x.md' },
+          { filename: 'README.md', previous_filename: 'docs/spend/README.md' },
         ]),
       ).toBe('true')
     })
