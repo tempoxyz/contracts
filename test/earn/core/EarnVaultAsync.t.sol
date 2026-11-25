@@ -567,7 +567,7 @@ contract EarnVaultAsyncTest is Test {
         core.cancelRedeem(requestId, 10 ether);
 
         IEarnFees fees = IEarnFees(core.earnFees());
-        assertEq(fees.highWaterMark(), 1 ether);
+        assertEq(fees.highWaterMark(), 1 ether * 1e18);
         (uint256 feeAssets, uint256 feeEarnShares) = core.accrueFees();
         assertEq(feeAssets, 0);
         assertEq(feeEarnShares, 0);
@@ -831,6 +831,74 @@ contract EarnVaultAsyncTest is Test {
         assertTrue(core.isAccountingAligned());
     }
 
+    /// @dev 2M whole six-decimal EarnShare under a 10% fixed fee. Engine rates move every share's value at once,
+    ///      in steps of 10 ** 12 per asset unit per whole EarnShare (one fee step).
+    function testChargedCancellationAndLaterChargeMatchAnUninterruptedPool() public {
+        address feeRecipient = address(0xFEE);
+        uint256 principal = 2_000_000e6;
+
+        // Without a request, three steps of growth charge 10% of it once.
+        (,, CoreMockAsyncEngine refEngine, EarnVault refCore) = _newFeeAsyncWithDecimals(feeRecipient, 6);
+        _depositInto(refCore, principal);
+        refEngine.setRate(1 ether + 3e12);
+        refCore.accrueFees();
+        uint256 refFeeValue = _valueOf(refCore, IEarnFees(refCore.earnFees()).claimableEarnShares(feeRecipient));
+        assertApproxEqAbs(refFeeValue, 600_000, 2);
+
+        // Half the pool queues and grows half a step: the cancellation charges that growth, while the active pool's
+        // half step still waits above the mark.
+        (, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore) =
+            _newFeeAsyncWithDecimals(feeRecipient, 6);
+        IEarnFees feeModule = IEarnFees(feeCore.earnFees());
+        _depositInto(feeCore, principal);
+        vm.prank(user);
+        bytes32 requestId = feeCore.requestRedeem(principal / 2, "", receiver);
+        feeEngine.setRate(1 ether + 0.5e12);
+        vm.prank(user);
+        feeCore.cancelRedeem(requestId, 1);
+        assertApproxEqAbs(_valueOf(feeCore, feeModule.claimableEarnShares(feeRecipient)), 50_000, 2);
+        assertGt(feeShare.balanceOf(receiver), 0);
+
+        // The same growth as the uninterrupted pool then charges the rest once: the queued growth is not charged
+        // again.
+        feeEngine.setRate(1 ether + 3e12);
+        feeCore.accrueFees();
+        uint256 feeValue = _valueOf(feeCore, feeModule.claimableEarnShares(feeRecipient));
+        assertApproxEqAbs(feeValue, refFeeValue, 3);
+        assertTrue(feeCore.isAccountingAligned());
+    }
+
+    function testRequestThenCancelDoesNotEscapeWaitingFees() public {
+        address feeRecipient = address(0xFEE);
+        uint256 principal = 2_000_000e6;
+
+        // Without a request, 0.9 of a step waits and a later step charges 10% of all 1.9 steps.
+        (,, CoreMockAsyncEngine refEngine, EarnVault refCore) = _newFeeAsyncWithDecimals(feeRecipient, 6);
+        _depositInto(refCore, principal);
+        refEngine.setRate(1 ether + 0.9e12);
+        refCore.accrueFees();
+        refEngine.setRate(1 ether + 1.9e12);
+        refCore.accrueFees();
+        uint256 refFeeValue = _valueOf(refCore, IEarnFees(refCore.earnFees()).claimableEarnShares(feeRecipient));
+        assertApproxEqAbs(refFeeValue, 380_000, 2);
+
+        // Most of the pool requests and cancels at once while 0.9 of a step waits: the cancellation charges that
+        // waiting growth, so the pool pays the same in total.
+        (,, CoreMockAsyncEngine feeEngine, EarnVault feeCore) = _newFeeAsyncWithDecimals(feeRecipient, 6);
+        IEarnFees feeModule = IEarnFees(feeCore.earnFees());
+        _depositInto(feeCore, principal);
+        feeEngine.setRate(1 ether + 0.9e12);
+        vm.prank(user);
+        bytes32 requestId = feeCore.requestRedeem(principal * 9 / 10, "", receiver);
+        vm.prank(user);
+        feeCore.cancelRedeem(requestId, 1);
+        feeEngine.setRate(1 ether + 1.9e12);
+        feeCore.accrueFees();
+        uint256 feeValue = _valueOf(feeCore, feeModule.claimableEarnShares(feeRecipient));
+        assertApproxEqAbs(feeValue, refFeeValue, 3);
+        assertTrue(feeCore.isAccountingAligned());
+    }
+
     function _deposit(uint256 assets) internal {
         vm.startPrank(user);
         asset.approve(address(core), type(uint256).max);
@@ -838,15 +906,35 @@ contract EarnVaultAsyncTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev The active pool's value of `earnShares`; the async mock engine has no synchronous exit to preview.
+    function _valueOf(EarnVault feeCore, uint256 earnShares) internal view returns (uint256) {
+        return earnShares * feeCore.totalAssets() / feeCore.totalEarnShares();
+    }
+
+    function _depositInto(EarnVault feeCore, uint256 assets) internal {
+        vm.startPrank(user);
+        CoreMockToken(feeCore.asset()).approve(address(feeCore), type(uint256).max);
+        CoreMockToken(feeCore.earnShare()).approve(address(feeCore), type(uint256).max);
+        feeCore.deposit(assets, user, 1);
+        vm.stopPrank();
+    }
+
     function _newFeeAsync(address feeRecipient)
+        internal
+        returns (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore)
+    {
+        return _newFeeAsyncWithDecimals(feeRecipient, 18);
+    }
+
+    function _newFeeAsyncWithDecimals(address feeRecipient, uint8 decimals)
         internal
         returns (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore)
     {
         FeeConfig memory config;
         config.fixedFeeCount = 1;
         config.fixedFees[0] = FixedFeeRecipient(feeRecipient, 1_000);
-        feeAsset = new CoreMockToken("Fee Asset", "FAST", 18);
-        feeShare = new CoreMockToken("Fee Share", "FSH", 18);
+        feeAsset = new CoreMockToken("Fee Asset", "FAST", decimals);
+        feeShare = new CoreMockToken("Fee Share", "FSH", decimals);
         feeEngine = new CoreMockAsyncEngine(feeAsset);
         feeCore = EarnVaultTestDeployer.deploy(address(feeEngine), address(feeShare), operator, config);
         feeEngine.setCore(feeCore);

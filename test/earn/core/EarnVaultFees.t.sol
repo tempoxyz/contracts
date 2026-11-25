@@ -23,6 +23,9 @@ import { CoreMockEngine, FaultyMockToken } from "../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
 
 contract EarnVaultFeesTest is Test {
+    /// @dev EarnFees keeps values per EarnShare at the EarnShare scale times this factor.
+    uint256 constant VALUE_PRECISION = 1e18;
+
     FaultyMockToken asset;
     FaultyMockToken share;
     Simple4626Vault venue;
@@ -47,13 +50,13 @@ contract EarnVaultFeesTest is Test {
         FeePreview memory preview = fees.previewAccruedFees();
         assertEq(preview.positiveAccrualAssets, 0);
         assertEq(preview.totalFeeAssets, 0);
-        assertEq(fees.highWaterMark(), 1 ether);
+        assertEq(fees.highWaterMark(), 1 ether * VALUE_PRECISION);
 
         _deposit(secondUser, 100 ether);
         assertEq(fees.claimableEarnShares(fixedRecipient), 0);
         assertEq(share.balanceOf(user), 100 ether);
         assertEq(share.balanceOf(secondUser), 100 ether);
-        assertEq(fees.highWaterMark(), 1 ether);
+        assertEq(fees.highWaterMark(), 1 ether * VALUE_PRECISION);
     }
 
     function testSteadyDepositSkipsBaselineRatchetThatWouldChangeNothing() public {
@@ -64,7 +67,7 @@ contract EarnVaultFeesTest is Test {
         for (uint256 i = 0; i < logs.length; i++) {
             assertTrue(logs[i].topics[0] != EarnFees.FeeBaselinesInitialized.selector);
         }
-        assertEq(fees.highWaterMark(), 1 ether);
+        assertEq(fees.highWaterMark(), 1 ether * VALUE_PRECISION);
 
         // Value above the mark is charged by the next checkpoint, after which the deposit again leaves nothing
         // to raise; the mark is the post-fee value either way.
@@ -72,7 +75,7 @@ contract EarnVaultFeesTest is Test {
         _deposit(user, 100 ether);
         FeePreview memory preview = fees.previewAccruedFees();
         assertEq(preview.totalFeeAssets, 0);
-        assertGt(fees.highWaterMark(), 1 ether);
+        assertGt(fees.highWaterMark(), 1 ether * VALUE_PRECISION);
         assertGt(fees.claimableEarnShares(fixedRecipient), 0);
     }
 
@@ -108,11 +111,11 @@ contract EarnVaultFeesTest is Test {
         assertEq(share.balanceOf(user), 100e6);
         assertEq(earnVault.anchorEngineShares(), 100e18);
         assertEq(earnVault.anchorEarnShares(), 100e6);
-        assertEq(fees.highWaterMark(), 1e6);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
 
         asset.mint(address(venue), 20e6);
         FeePreview memory preview = fees.previewAccruedFees();
-        assertEq(preview.preFeeValuePerEarnShare, 1.2e6);
+        assertEq(preview.preFeeValuePerEarnShare, 1.2e6 * VALUE_PRECISION);
         assertEq(preview.positiveAccrualAssets, 20e6);
         assertEq(preview.totalFeeAssets, 2e6);
 
@@ -135,13 +138,19 @@ contract EarnVaultFeesTest is Test {
         assertEq(venueShares, 100e18);
         assertEq(earnShares, 100e6);
         assertEq(share.balanceOf(user), 100e6);
-        assertEq(fees.highWaterMark(), 1e6);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
     }
 
-    function testFractionalHighWaterBandIsNotChargedAcrossCheckpoints() public {
+    function testDustPoolCheckpointsChargeNoMoreThanOneCheckpoint() public {
+        // Three EarnShare units: every asset unit of growth is a whole step above the mark, so each one charges.
         _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
         _deposit(user, 3);
+        asset.mint(address(venue), 100);
+        (uint256 singleFeeAssets,) = earnVault.accrueFees();
+        assertEq(singleFeeAssets, 9);
 
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 3);
         uint256 totalFeeAssets;
         for (uint256 i = 0; i < 100; i++) {
             asset.mint(address(venue), 1);
@@ -149,12 +158,15 @@ contract EarnVaultFeesTest is Test {
             totalFeeAssets += feeAssets;
         }
 
-        assertEq(totalFeeAssets, 0);
+        // The mark moves only by the accrual each checkpoint charged, so no value is charged twice and none is
+        // dropped: the hundred checkpoints charge what one does, less what still waits above the mark.
+        assertLe(_waitingAccrual(6), 1);
+        assertEq(totalFeeAssets, singleFeeAssets);
+        // Each fee converts to less than one EarnShare unit here, so it is waived rather than minted.
         assertEq(fees.claimableEarnShares(fixedRecipient), 0);
-        assertEq(fees.highWaterMark(), 34_333_334);
     }
 
-    function testNoAccrualFastPathRoundsExcessTargetUp() public {
+    function testExcessFeeChargesWaitingAccrualOnceItIsChargeable() public {
         FeeConfig memory config;
         config.excess = ExcessReturnFee(true, excessRecipient, 0, 10_000);
         _deployWithDecimals(config, 6);
@@ -162,15 +174,181 @@ contract EarnVaultFeesTest is Test {
 
         asset.mint(address(this), 3);
         asset.approve(address(earnVault), 3);
+        // One asset unit on three whole EarnShare is a third of a step: it waits above the mark, and the target does
+        // not restart above the mark, so the waiting unit stays chargeable.
         earnVault.contribute(1);
-
-        assertEq(fees.targetBase(), 1_000_001);
-        assertEq(fees.claimableEarnShares(excessRecipient), 0);
-
-        earnVault.contribute(2);
-
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
+        assertEq(fees.targetBase(), 1e6 * VALUE_PRECISION);
         assertEq(fees.claimableEarnShares(excessRecipient), 0);
         assertEq(fees.previewAccruedFees().totalFeeAssets, 0);
+
+        // Three units make a whole step, and the excess fee takes all of them above the zero-rate target, once.
+        // Holders keep exactly the target, which stays the mark.
+        earnVault.contribute(2);
+        assertEq(fees.claimableEarnShares(excessRecipient), 3);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
+        assertEq(fees.targetBase(), 1e6 * VALUE_PRECISION);
+        assertEq(fees.previewAccruedFees().totalFeeAssets, 0);
+        (uint256 feeAssets,) = earnVault.accrueFees();
+        assertEq(feeAssets, 0);
+    }
+
+    /// @dev 100M of six-decimal principal earning 5% a year for one day, checkpointed every ten minutes or once. Ten
+    ///      minutes of yield is less than one step (one asset unit per whole EarnShare, 100 units here), so about every
+    ///      other checkpoint charges, and the last accrual may still wait above the mark.
+    function testCheckpointCadenceDoesNotChangeFees() public {
+        uint256 principal = 100_000_000e6;
+        uint256 checkpoints = 144;
+        uint256 yieldPerCheckpoint = principal * 500 / 10_000 / 365 / checkpoints;
+
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        asset.mint(user, principal);
+        _deposit(user, principal);
+        asset.mint(address(venue), yieldPerCheckpoint * checkpoints);
+        (uint256 singleFeeAssets,) = earnVault.accrueFees();
+        uint256 singleFeeValue = earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient));
+        assertApproxEqAbs(singleFeeAssets, yieldPerCheckpoint * checkpoints / 10, 1);
+
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        asset.mint(user, principal);
+        _deposit(user, principal);
+        uint256 cadenceFeeAssets;
+        uint256 charges;
+        for (uint256 i = 0; i < checkpoints; i++) {
+            asset.mint(address(venue), yieldPerCheckpoint);
+            (uint256 feeAssets,) = earnVault.accrueFees();
+            cadenceFeeAssets += feeAssets;
+            if (feeAssets != 0) charges++;
+        }
+        uint256 cadenceFeeValue = earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient));
+        uint256 waiting = _waitingAccrual(6);
+
+        assertLe(charges, checkpoints / 2 + 1);
+        // Less than one step waits, uncharged but not dropped.
+        assertLt(waiting, earnVault.totalEarnShares() / 1e6);
+        // Charged plus waiting fees match one checkpoint's to within an asset unit's rounding.
+        assertApproxEqAbs(cadenceFeeAssets + waiting / 10, singleFeeAssets, 2);
+        // Each charge rounds its fee EarnShare down by less than one unit, worth about one asset unit here, while fee
+        // EarnShare minted early also earns the later yield.
+        assertGe(cadenceFeeValue + waiting / 10 + charges, singleFeeValue);
+        assertLe(cadenceFeeValue + waiting / 10, singleFeeValue + singleFeeValue / 1_000);
+
+        // A final step of yield charges what was waiting with it.
+        asset.mint(address(venue), earnVault.totalEarnShares() / 1e6);
+        (uint256 lastFeeAssets,) = earnVault.accrueFees();
+        assertApproxEqAbs(lastFeeAssets, (waiting + earnVault.totalEarnShares() / 1e6) / 10, 2);
+        assertLe(_waitingAccrual(6), 1);
+    }
+
+    /// @dev 400 checkpoints of one asset unit of growth each on a pool of about 100 whole EarnShare charge what one
+    ///      checkpoint over the same growth charges: each checkpoint moves the mark only by the accrual it charged.
+    function testUnitGrowthCheckpointsChargeAsOneCheckpoint() public {
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_003);
+        asset.mint(address(venue), 500);
+        (uint256 singleFeeAssets, uint256 singleFeeEarnShares) = earnVault.accrueFees();
+        assertEq(singleFeeAssets, 49);
+        assertEq(singleFeeEarnShares, 48);
+
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_003);
+        uint256 cadenceFeeAssets;
+        uint256 cadenceFeeEarnShares;
+        uint256 charges;
+        for (uint256 i = 0; i < 400; i++) {
+            asset.mint(address(venue), 1);
+            (uint256 feeAssets, uint256 feeEarnShares) = earnVault.accrueFees();
+            cadenceFeeAssets += feeAssets;
+            cadenceFeeEarnShares += feeEarnShares;
+            if (feeAssets != 0) charges++;
+        }
+        // One step here is 100 asset units of growth, so the checkpoints charged three times and the rest waits.
+        uint256 waiting = _waitingAccrual(6);
+        assertEq(charges, 3);
+        assertLt(waiting, 101);
+        assertEq(cadenceFeeAssets + waiting / 10, 40);
+
+        // A last step of growth charges the waiting accrual with it.
+        asset.mint(address(venue), 100);
+        (uint256 lastFeeAssets, uint256 lastFeeEarnShares) = earnVault.accrueFees();
+        cadenceFeeAssets += lastFeeAssets;
+        cadenceFeeEarnShares += lastFeeEarnShares;
+        charges++;
+        assertLe(_waitingAccrual(6), 1);
+        assertEq(cadenceFeeAssets, singleFeeAssets);
+        // Each charge rounds its fee EarnShare down by less than one unit.
+        assertLe(cadenceFeeEarnShares, singleFeeEarnShares);
+        assertGe(cadenceFeeEarnShares + charges, singleFeeEarnShares);
+    }
+
+    function testConfigChangeSettlesWaitingGrowthUnderOldTerms() public {
+        address newRecipient = address(0xBEEF);
+        // 100M at six decimals, so one step is 100e6 asset units. Half a step waits when the recipient changes: the
+        // old recipient is charged for it, and only growth after the change goes to the new one.
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_000e6);
+        asset.mint(address(venue), 50e6);
+        earnVault.setFeeConfig(_fixedConfig(newRecipient, 1_000));
+        assertApproxEqAbs(earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient)), 5e6, 2);
+        assertLe(_waitingAccrual(6), 1);
+        asset.mint(address(venue), 300e6);
+        (uint256 newFeeAssets,) = earnVault.accrueFees();
+        assertApproxEqAbs(newFeeAssets + _waitingAccrual(6) / 10, 30e6, 1);
+    }
+
+    function testRepeatedConfigReinstallsChargeTheSameFees() public {
+        // Without changes: ten half steps of growth charged at the end.
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_000e6);
+        asset.mint(address(venue), 500e6);
+        earnVault.accrueFees();
+        uint256 singleFeeValue = earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient));
+
+        // Reinstalling the same configuration every half step settles each half step instead of erasing it.
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_000e6);
+        for (uint256 i = 0; i < 10; i++) {
+            asset.mint(address(venue), 50e6);
+            earnVault.setFeeConfig(_fixedConfig(fixedRecipient, 1_000));
+        }
+        uint256 reinstallFeeValue = earnVault.previewRedeem(fees.claimableEarnShares(fixedRecipient));
+        assertApproxEqAbs(singleFeeValue, 50e6, 2);
+        // Fee EarnShare minted earlier also earns the later growth, so settling more often pays slightly more.
+        assertGe(reinstallFeeValue + 20, singleFeeValue);
+        assertLe(reinstallFeeValue, singleFeeValue + singleFeeValue / 100_000);
+    }
+
+    function testDepositOneSecondAfterYieldWritesNoFeeState() public {
+        // A 100M pool one second after a charging checkpoint: one second of 5% yield is far below one step.
+        uint256 principal = 100_000_000e6;
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        asset.mint(user, principal);
+        _deposit(user, principal);
+        asset.mint(address(venue), principal / 100);
+        earnVault.accrueFees();
+        uint256 mark = fees.highWaterMark();
+        uint256 claimable = fees.claimableEarnShares(fixedRecipient);
+        asset.mint(address(venue), earnVault.totalAssets() * 500 / 10_000 / 365 days);
+        vm.warp(block.timestamp + 1);
+        uint256 waiting = _waitingAccrual(6);
+        assertGt(waiting, 0);
+
+        vm.recordLogs();
+        vm.startStateDiffRecording();
+        _deposit(secondUser, 1_000e6);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        // The checkpoint charges nothing and the entry raises no baseline, so EarnFees writes no slot.
+        assertEq(_storageWrites(accesses, address(fees)), 0);
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != EarnFees.FeeBaselinesInitialized.selector);
+        }
+        assertEq(fees.highWaterMark(), mark);
+        assertEq(fees.claimableEarnShares(fixedRecipient), claimable);
+        // The waiting accrual stays above the mark for a later checkpoint: the entry carries the same value per
+        // EarnShare above the mark.
+        assertGe(_waitingAccrual(6), waiting);
     }
 
     function testLaterDepositDoesNotMakeDustEntryPrincipalFeeable() public {
@@ -186,14 +364,15 @@ contract EarnVaultFeesTest is Test {
         vm.prank(user);
         assertEq(earnVault.depositVenueShares(1e12, user, 1), 1);
         assertEq(earnVault.totalAssets(), 1);
-        assertEq(fees.highWaterMark(), 1e6);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
 
         _deposit(secondUser, 300e6);
 
         FeePreview memory preview = fees.previewAccruedFees();
         assertEq(preview.positiveAccrualAssets, 0);
         assertEq(preview.totalFeeAssets, 0);
-        assertEq(fees.highWaterMark(), 1_500_000);
+        // The pooled value: the dust entry's backing was worth 1.5 asset units, which its value floored to 1.
+        assertEq(fees.highWaterMark(), 1_499_999_997_500_000_012_500_000);
     }
 
     function testPreviewRedeemIncludesPendingFeeDilutionAndMatchesRedeem() public {
@@ -220,7 +399,7 @@ contract EarnVaultFeesTest is Test {
         asset.approve(address(earnVault), 99);
         earnVault.contribute(99);
 
-        assertEq(fees.highWaterMark(), 100_000_000);
+        assertEq(fees.highWaterMark(), 100_000_000 * VALUE_PRECISION);
         assertEq(fees.claimableEarnShares(fixedRecipient), 0);
         assertEq(fees.previewAccruedFees().totalFeeAssets, 0);
 
@@ -236,13 +415,13 @@ contract EarnVaultFeesTest is Test {
         config.excess = ExcessReturnFee(true, excessRecipient, 0, 5_000);
         _deployWithDecimals(config, 6);
         _pinBaselinesAndEmptyPool();
-        assertEq(fees.targetBase(), 100e6);
+        assertEq(fees.targetBase(), 100e6 * VALUE_PRECISION);
 
         // The next deposit reopens the pool at par and restarts both baselines there.
         vm.warp(block.timestamp + 1 days);
         _deposit(secondUser, 100e6);
-        assertEq(fees.highWaterMark(), 1e6);
-        assertEq(fees.targetBase(), 1e6);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
+        assertEq(fees.targetBase(), 1e6 * VALUE_PRECISION);
         assertEq(fees.targetStartedAt(), block.timestamp);
         assertFalse(fees.feeBaselinesPending());
 
@@ -264,7 +443,7 @@ contract EarnVaultFeesTest is Test {
         venue.approve(address(engine), venueShares);
         earnVault.depositVenueShares(venueShares, secondUser, 1);
         vm.stopPrank();
-        assertEq(fees.highWaterMark(), 1e6);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
 
         asset.mint(address(venue), 10e6);
         (uint256 feeAssets,) = earnVault.accrueFees();
@@ -289,7 +468,7 @@ contract EarnVaultFeesTest is Test {
         staleEngine.setFeeValuation(true, false);
         _deposit(secondUser, 100e6);
         assertTrue(fees.feeBaselinesPending());
-        assertEq(fees.highWaterMark(), 100e6);
+        assertEq(fees.highWaterMark(), 100e6 * VALUE_PRECISION);
 
         // The next fresh checkpoint restarts them at the current value without charging it.
         staleEngine.setFeeValuation(true, true);
@@ -297,7 +476,7 @@ contract EarnVaultFeesTest is Test {
         assertEq(feeAssets, 0);
         assertEq(feeEarnShares, 0);
         assertFalse(fees.feeBaselinesPending());
-        assertEq(fees.highWaterMark(), 1e6);
+        assertEq(fees.highWaterMark(), 1e6 * VALUE_PRECISION);
 
         staleEngine.setNavGain(10e6);
         (feeAssets,) = earnVault.accrueFees();
@@ -372,7 +551,7 @@ contract EarnVaultFeesTest is Test {
         FeePreview memory preview = fees.previewAccruedFees();
         assertEq(preview.positiveAccrualAssets, 50 ether);
         assertEq(preview.fixedFeeAssets, 2.625 ether);
-        assertEq(preview.targetValuePerEarnShare, 1.03 ether);
+        assertEq(preview.targetValuePerEarnShare, 1.03 ether * VALUE_PRECISION);
         assertEq(preview.excessFeeAssets, 17.375 ether);
         assertEq(preview.totalFeeAssets, 20 ether);
         assertEq(preview.allocationCount, 3);
@@ -411,8 +590,8 @@ contract EarnVaultFeesTest is Test {
 
         asset.mint(address(venue), 10 ether);
         FeePreview memory preview = fees.previewAccruedFees();
-        uint256 expectedPositiveAccrualAssets =
-            (preview.preFeeValuePerEarnShare - fees.highWaterMark()) * share.totalSupply() / 1 ether;
+        uint256 expectedPositiveAccrualAssets = (preview.preFeeValuePerEarnShare - fees.highWaterMark())
+            * earnVault.totalEarnShares() / (1 ether * VALUE_PRECISION);
         assertEq(preview.positiveAccrualAssets, expectedPositiveAccrualAssets);
         assertLt(preview.positiveAccrualAssets, 10 ether);
         assertEq(preview.totalFeeAssets, expectedPositiveAccrualAssets / 10);
@@ -428,16 +607,16 @@ contract EarnVaultFeesTest is Test {
         excessConfig.excess = ExcessReturnFee(true, excessRecipient, 1_000, 5_000);
         earnVault.setFeeConfig(excessConfig);
 
-        assertEq(fees.highWaterMark(), 1 ether);
-        assertEq(fees.targetBase(), 0.8 ether);
+        assertEq(fees.highWaterMark(), 1 ether * VALUE_PRECISION);
+        assertEq(fees.targetBase(), 0.8 ether * VALUE_PRECISION);
 
         asset.mint(address(venue), 10 ether);
         (uint256 feeAssets, uint256 feeEarnShares) = earnVault.accrueFees();
 
         assertEq(feeAssets, 0);
         assertEq(feeEarnShares, 0);
-        assertEq(fees.highWaterMark(), 1 ether);
-        assertEq(fees.targetBase(), 0.9 ether);
+        assertEq(fees.highWaterMark(), 1 ether * VALUE_PRECISION);
+        assertEq(fees.targetBase(), 0.9 ether * VALUE_PRECISION);
         assertEq(fees.targetStartedAt(), block.timestamp);
     }
 
@@ -452,12 +631,12 @@ contract EarnVaultFeesTest is Test {
         asset.mint(address(venue), 5 ether);
         earnVault.accrueFees();
         assertEq(fees.claimableEarnShares(excessRecipient), 0);
-        assertEq(fees.targetBase(), 1 ether);
+        assertEq(fees.targetBase(), 1 ether * VALUE_PRECISION);
 
         vm.warp(targetStartedAt + 2 * 365 days);
         asset.mint(address(venue), 20 ether);
         FeePreview memory preview = fees.previewAccruedFees();
-        assertEq(preview.targetValuePerEarnShare, 1.2 ether);
+        assertEq(preview.targetValuePerEarnShare, 1.2 ether * VALUE_PRECISION);
         assertApproxEqAbs(preview.excessFeeAssets, 5 ether, 100);
         assertEq(preview.totalFeeAssets, preview.excessFeeAssets);
     }
@@ -612,7 +791,7 @@ contract EarnVaultFeesTest is Test {
         earnVault.setFeeConfig(_fixedConfig(fixedRecipient, 1_000));
         assertTrue(fees.feesActive());
         assertEq(fees.currentFeeConfigId(), 2);
-        assertEq(fees.highWaterMark(), 1.2 ether);
+        assertEq(fees.highWaterMark(), 1.2 ether * VALUE_PRECISION);
 
         asset.mint(address(venue), 10 ether);
         earnVault.accrueFees();
@@ -748,10 +927,18 @@ contract EarnVaultFeesTest is Test {
         asset.mint(address(this), 99);
         asset.approve(address(earnVault), 99);
         earnVault.contribute(99);
-        assertEq(fees.highWaterMark(), 100e6);
+        assertEq(fees.highWaterMark(), 100e6 * VALUE_PRECISION);
         vm.prank(user);
         assertEq(earnVault.redeem(1, user, 1), 100);
         assertEq(earnVault.totalEarnShares(), 0);
+    }
+
+    /// @dev Accrual above the high-water mark that no checkpoint has charged yet, in asset units.
+    function _waitingAccrual(uint8 decimals) internal view returns (uint256) {
+        uint256 marked =
+            Math.mulDiv(fees.highWaterMark(), earnVault.totalEarnShares(), 10 ** decimals * VALUE_PRECISION);
+        uint256 assets = earnVault.totalAssets();
+        return assets > marked ? assets - marked : 0;
     }
 
     function _fixedConfig(address recipient, uint16 rateBps) internal pure returns (FeeConfig memory config) {
@@ -1018,10 +1205,10 @@ contract EarnFeesWideBaselineTest is Test {
     }
 
     function testWideBaselinesKeepTheirValueAndNeverChargeTwice() public {
-        // One EarnShare unit backed by 2 ** 150 asset units values each whole EarnShare far above 2 ** 128.
-        uint256 assets = 1 << 150;
+        // One EarnShare unit backed by 2 ** 100 asset units values each whole EarnShare far above 2 ** 128.
+        uint256 assets = 1 << 100;
         fees.initializeBaselines(1, assets);
-        uint256 expected = assets * 1e18;
+        uint256 expected = assets * 1e36;
         assertGt(expected, type(uint128).max);
         assertEq(fees.highWaterMark(), expected);
         assertEq(fees.targetBase(), expected);
@@ -1036,7 +1223,7 @@ contract EarnFeesWideBaselineTest is Test {
         assertGt(feeAssets, 0);
         uint256 mark = fees.highWaterMark();
         assertGt(mark, expected);
-        assertEq(mark, Math.mulDiv(2 * assets, 1e18, 1 + feeEarnShares, Math.Rounding.Ceil));
+        assertEq(mark, Math.mulDiv(2 * assets, 1e36, 1 + feeEarnShares, Math.Rounding.Ceil));
         assertEq(fees.targetBase(), mark);
         (feeAssets,,,) = fees.accrueFees(1 + feeEarnShares, 2 * assets, true);
         assertEq(feeAssets, 0);
@@ -1044,7 +1231,7 @@ contract EarnFeesWideBaselineTest is Test {
     }
 
     function testNarrowBaselinesReplaceWideOnes() public {
-        fees.initializeBaselines(1, 1 << 150);
+        fees.initializeBaselines(1, 1 << 100);
         assertGt(fees.highWaterMark(), type(uint128).max);
 
         // Re-enabling fees restarts both baselines at the pool's current value, which fits its half again.
@@ -1052,8 +1239,8 @@ contract EarnFeesWideBaselineTest is Test {
         assetsNow = 3e18;
         fees.disableFees(address(this));
         fees.setFeeConfig(_config());
-        assertEq(fees.highWaterMark(), 3e18);
-        assertEq(fees.targetBase(), 3e18);
+        assertEq(fees.highWaterMark(), 3e36);
+        assertEq(fees.targetBase(), 3e36);
     }
 
     /// @dev EarnFees reads the paired vault's active assets and valuation freshness back from it.
@@ -1069,6 +1256,135 @@ contract EarnFeesWideBaselineTest is Test {
         config.fixedFeeCount = 1;
         config.fixedFees[0] = FixedFeeRecipient(address(0xF1), 1_000);
         config.excess = ExcessReturnFee(true, address(0xE1), 300, 5_000);
+    }
+}
+
+/// @notice EarnFees driven directly, with this test as its paired vault, at the edges of its value arithmetic.
+contract EarnFeesBoundaryTest is Test {
+    uint256 private constant VALUE_PRECISION = 1e18;
+
+    EarnFees private fees;
+    FaultyMockToken private share;
+    uint256 private assetsNow;
+
+    function testEntryFloorSaturatesAtItsBoundaryMark() public {
+        // Zero decimals and 10 ** 18 EarnShare units make the mark exactly the active assets.
+        _initialize(0, _fixedConfig());
+        uint256 mark = type(uint256).max - (VALUE_PRECISION - 1);
+        fees.initializeBaselines(1e18, mark);
+        assertEq(fees.highWaterMark(), mark);
+
+        // A checkpoint with nothing above the mark returns the highest entry floor, saturated, instead of reverting.
+        (uint256 feeAssets,, uint256 baselineFloor, uint256 scale) = fees.accrueFees(1e18, mark, true);
+        assertEq(feeAssets, 0);
+        assertEq(scale, VALUE_PRECISION);
+        assertEq(baselineFloor, type(uint256).max);
+
+        // One value unit lower, the floor is the last value a step above the mark does not reach.
+        _initialize(0, _fixedConfig());
+        fees.initializeBaselines(1e18, mark - 1);
+        (,, baselineFloor,) = fees.accrueFees(1e18, mark - 1, true);
+        assertEq(baselineFloor, type(uint256).max - 1);
+    }
+
+    function testDrawdownTargetRestartsOnlyOnceValueExceedsIt() public {
+        // 10 ** 12 whole EarnShare, so a value per EarnShare moves in steps of 10 ** 6 value units per asset unit.
+        uint256 supply = 1e30;
+        _initialize(18, _fixedConfig());
+        share.mint(address(this), supply + 2);
+        fees.initializeBaselines(supply, 2e30);
+        uint256 mark = fees.highWaterMark();
+
+        // In a drawdown, adding an excess fee starts its target at the current value, below the mark.
+        assetsNow = 1.5e30 + 123_456_789;
+        FeeConfig memory config = _fixedConfig();
+        config.excess = ExcessReturnFee(true, address(0xE1), 1_000, 5_000);
+        fees.setFeeConfig(config);
+        uint256 base = fees.targetBase();
+        uint40 startedAt = fees.targetStartedAt();
+        assertLt(base, mark);
+
+        vm.warp(block.timestamp + 30 days);
+        uint256 targetNow = fees.previewAccruedFees().targetValuePerEarnShare;
+        assertGt(targetNow, base);
+        // A value just above the step below the grown target: rounded up to a whole step it passes the target,
+        // but the value itself stays below it.
+        uint256 stepBelow = targetNow - targetNow % VALUE_PRECISION;
+        uint256 assets = stepBelow / 1e6 + 1;
+        uint256 value = assets * 1e6;
+        assertLt(value, targetNow);
+        assertGt(stepBelow + VALUE_PRECISION, targetNow);
+
+        // Neither a checkpoint nor a principal entry restarts the target the value never reached.
+        (uint256 feeAssets,, uint256 baselineFloor,) = fees.accrueFees(supply, assets, true);
+        assertEq(feeAssets, 0);
+        assertEq(fees.targetBase(), base);
+        assertEq(fees.targetStartedAt(), startedAt);
+        // The vault skips a principal entry at or below the grown target, which changes nothing.
+        assertEq(baselineFloor, targetNow);
+        fees.initializeBaselines(supply, assets);
+        assertEq(fees.targetBase(), base);
+        assertEq(fees.targetStartedAt(), startedAt);
+        assertEq(fees.highWaterMark(), mark);
+
+        // A value above the target restarts it at that value rounded up to a whole step.
+        uint256 aboveAssets = targetNow / 1e6 + 1;
+        fees.accrueFees(supply, aboveAssets, true);
+        assertEq(fees.targetBase(), stepBelow + VALUE_PRECISION);
+        assertEq(fees.targetStartedAt(), block.timestamp);
+        assertEq(fees.highWaterMark(), mark);
+    }
+
+    function testEarnShareDecimalsAreCappedWhereValuesKeepHeadroom() public {
+        // At 59 decimals the value scale is 10 ** 77, within a factor of two of uint256, so a snapshot rebuilt
+        // from a one-unit request overflows; such an EarnShare is refused, as is anything past 36.
+        _expectInitializeReverts(59);
+        _expectInitializeReverts(37);
+
+        _initialize(36, _fixedConfig());
+        assertEq(fees.earnShareScale(), 1e36);
+
+        // At the cap, ten EarnShare units worth 10 ** 22 asset units each value a whole EarnShare at 10 ** 58 asset
+        // units, and a one-unit request's snapshot still rebuilds within uint256 when it is cancelled.
+        fees.initializeBaselines(10, 1e23);
+        uint256 mark = fees.highWaterMark();
+        assertEq(mark, 1e76);
+        bytes32 requestId = keccak256("request");
+        fees.recordRedeemRequest(requestId, 1);
+        assertTrue(fees.shouldChargeRedeem(requestId));
+
+        // The unit doubled while queued: the fee is 10% of its growth, worth less than the one re-entry unit.
+        uint256 feeEarnShares = fees.settleCancelledRedeem(requestId, 1, 2e22, 9, 9e22, 2);
+        assertEq(feeEarnShares, 0);
+        assertFalse(fees.shouldChargeRedeem(requestId));
+        assertGe(fees.highWaterMark(), mark);
+    }
+
+    /// @dev EarnFees reads the paired vault's active assets and valuation freshness back from it.
+    function totalAssets() external view returns (uint256) {
+        return assetsNow;
+    }
+
+    function isFeeValuationFresh() external pure returns (bool) {
+        return true;
+    }
+
+    function _initialize(uint8 decimals, FeeConfig memory config) private {
+        share = new FaultyMockToken("Earn Share", "EARN", decimals);
+        fees = EarnFees(Clones.clone(address(new EarnFees())));
+        fees.initialize(address(this), address(share), config);
+    }
+
+    function _expectInitializeReverts(uint8 decimals) private {
+        FaultyMockToken wide = new FaultyMockToken("Earn Share", "EARN", decimals);
+        EarnFees clone = EarnFees(Clones.clone(address(new EarnFees())));
+        vm.expectRevert(EarnFees.InvalidFeeConfiguration.selector);
+        clone.initialize(address(this), address(wide), _fixedConfig());
+    }
+
+    function _fixedConfig() private pure returns (FeeConfig memory config) {
+        config.fixedFeeCount = 1;
+        config.fixedFees[0] = FixedFeeRecipient(address(0xF1), 1_000);
     }
 }
 

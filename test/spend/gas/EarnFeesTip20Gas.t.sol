@@ -134,6 +134,24 @@ contract EarnFeesTip20GasTest is Test {
         vm.snapshotValue("earn-fees-tip20", "redeem.yield", before - gasleft());
     }
 
+    /// @dev A deposit into a $100M pool one second after its last charging checkpoint, with one second of 5% annual
+    ///      yield since: growth below one value unit per EarnShare waits, so the checkpoint charges nothing.
+    function test_gasDepositOneSecondOfYieldLargePool() public {
+        usd.mint(holder, 100_000_000e6);
+        vm.prank(holder);
+        earnVault.deposit(100_000_000e6, holder, 1);
+        _accrueYield();
+        earnVault.accrueFees();
+        uint256 claimable = fees.totalClaimableEarnShares();
+        usd.mint(address(venue), usd.balanceOf(address(venue)) * 500 / 10_000 / 365 days);
+        vm.warp(block.timestamp + 1);
+        vm.prank(holder);
+        uint256 before = gasleft();
+        earnVault.deposit(1000e6, holder, 1);
+        vm.snapshotValue("earn-fees-tip20", "deposit.large-pool.one-second-yield", before - gasleft());
+        assertEq(fees.totalClaimableEarnShares(), claimable);
+    }
+
     /// @dev A full claim by one recipient while the other's EarnShare stays with `EarnFees`.
     function test_gasClaimAll() public {
         uint256 claimable = fees.claimableEarnShares(fixedRecipient);
