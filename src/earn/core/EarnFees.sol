@@ -140,9 +140,6 @@ contract EarnFees is IEarnFees {
 
     /// @dev Reentrancy lock held for the duration of each locked call. Transient storage writes no slot.
     bool private transient _entered;
-    /// @dev The value per EarnShare, rounded up, that the last checkpoint which valued the pool settled to. The vault
-    ///      asks for a request snapshot only right after such a checkpoint in the same call, which writes it.
-    uint256 private transient _checkpointValue;
 
     event FeesAccrued(
         uint64 indexed configId,
@@ -354,7 +351,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// @custom:ensures !_configHasFees(config) ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
     /// @custom:ensures (_configHasFees(config) && !config.excess.enabled) ==> targetBase() == 0 && targetStartedAt == 0
-    /// @custom:ensures (_configHasFees(config) && old(_specFeesActive())) ==> highWaterMark() == old(highWaterMark())
+    /// @custom:ensures (_configHasFees(config) && old(_specFeesActive())) ==> highWaterMark() >= old(highWaterMark())
     /// @custom:ensures (old(_specFeesActive()) || !_configHasFees(config)) ==> feeBaselinesPending == old(feeBaselinesPending)
     /// @custom:ensures (config.excess.enabled && old(_specFeesActive())) ==> targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures (config.excess.enabled && old(_specFeesActive() && _feeConfigs[_currentFeeConfigId].excess.enabled)) ==> targetBase() == old(_specTargetNow())
@@ -394,6 +391,7 @@ contract EarnFees is IEarnFees {
                 uint256 earnShareSupply = _activeSupply();
                 _initializeFeeBaselines(earnShareSupply, earnShareSupply == 0 ? 0 : _activeAssets());
             } else if (config.excess.enabled) {
+                _forfeitWaitingAccrual();
                 if (oldExcess.enabled) {
                     _setTargetBase(oldTargetNow);
                     targetStartedAt = uint40(block.timestamp);
@@ -407,12 +405,25 @@ contract EarnFees is IEarnFees {
                     targetStartedAt = uint40(block.timestamp);
                 }
             } else {
+                _forfeitWaitingAccrual();
                 _setTargetBase(0);
                 targetStartedAt = 0;
             }
         }
 
         emit FeeConfigurationSet(configId, keccak256(abi.encode(config)), reactivated);
+    }
+
+    /// @notice On a change between fee configurations, raises the high-water mark over accrual the outgoing
+    ///         configuration left waiting below one step, so the incoming one never charges growth earned before it.
+    /// @dev The vault checkpoints in the same call first, so what waits is less than one step; the outgoing
+    ///      recipients forgo it rather than the incoming ones collecting it. A stale valuation leaves the mark.
+    /// @custom:ensures highWaterMark() >= old(highWaterMark()) && targetBase() == old(targetBase())
+    function _forfeitWaitingAccrual() internal {
+        uint256 supply = _activeSupply();
+        if (supply == 0 || !_feeValuationFresh()) return;
+        uint256 value = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), _valueScale(), supply);
+        if (value > highWaterMark()) _setHighWaterMark(value);
     }
 
     /// @notice Reverts unless `config` satisfies the same structural rules as an installed configuration.
@@ -480,10 +491,9 @@ contract EarnFees is IEarnFees {
     }
 
     /// @notice Snapshots a fee-active request's high-water value and target value for its burned EarnShare.
-    /// @dev The vault asks only while its valuation is fresh, right after the checkpoint that valued the pool in the
-    ///      same call, as for `accrueFees`, so freshness is not read again. The high-water value is the higher of
-    ///      the mark and the value that checkpoint settled to: accrual still waiting below one step leaves with the
-    ///      request uncharged, as with any exit, so a cancellation charges only growth while queued.
+    /// @dev The vault asks only while its valuation is fresh, as for `accrueFees`, so freshness is not read again. The
+    ///      high-water value is the mark's: accrual still waiting below one step stays chargeable, so a cancellation
+    ///      charges it with the growth while queued, and a finalized request takes it uncharged, as any exit does.
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _valueScale() == old(_valueScale())
     /// @custom:ensures _currentFeeConfigId == old(_currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
@@ -501,9 +511,7 @@ contract EarnFees is IEarnFees {
         uint24 configId = _currentFeeConfigId;
         uint256 scale = _valueScale();
         (uint256 mark, uint256 base) = _baselines();
-        uint256 settled = _checkpointValue;
-        uint256 highWaterValue =
-            Math.mulDiv(settled > mark ? settled : mark, burnedEarnShares, scale, Math.Rounding.Ceil);
+        uint256 highWaterValue = Math.mulDiv(mark, burnedEarnShares, scale, Math.Rounding.Ceil);
         uint256 targetValue;
         StoredExcessFee memory excess = _feeConfigs[configId].excess;
         if (excess.enabled) {
@@ -681,8 +689,6 @@ contract EarnFees is IEarnFees {
         if (feeBaselinesPending) {
             feeBaselinesPending = false;
             _initializeFeeBaselines(earnShareSupply, activeAssets);
-            // The baselines restart at the current value, which this checkpoint therefore settled to.
-            _checkpointValue = highWaterMark();
             return (result, 0, 0);
         }
 
@@ -697,7 +703,6 @@ contract EarnFees is IEarnFees {
         (uint256 mark, uint256 base) = _baselines();
         if (_chargeableAccrual(result.preFeeValuePerEarnShare, mark, earnShareSupply, scale) == 0) {
             result.postFeeValuePerEarnShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, scale, earnShareSupply);
-            _checkpointValue = result.postFeeValuePerEarnShare;
             uint256 targetNow;
             if (excess.enabled) {
                 result.targetValuePerEarnShare =
@@ -756,7 +761,6 @@ contract EarnFees is IEarnFees {
         }
         // Both baselines share a slot, so the moved mark and any restarted target are written together.
         _setBaselines(mark, base);
-        _checkpointValue = result.postFeeValuePerEarnShare;
 
         emit FeesAccrued(
             _currentFeeConfigId,
@@ -1463,10 +1467,7 @@ contract EarnFees is IEarnFees {
         return _pendingFeeSnapshots[requestId].feeConfigId == _currentFeeConfigId
             && _pendingFeeSnapshots[requestId].requestedAt == uint40(block.timestamp)
             && _pendingFeeSnapshots[requestId].highWaterValue
-                == EarnFeeMath.ceilDiv(
-                (_checkpointValue > highWaterMark() ? _checkpointValue : highWaterMark()) * burnedEarnShares,
-                _valueScale()
-            )
+                == EarnFeeMath.ceilDiv(highWaterMark() * burnedEarnShares, _valueScale())
             && (!_feeConfigs[_currentFeeConfigId].excess.enabled
                 || _pendingFeeSnapshots[requestId].targetValue
                     == EarnFeeMath.ceilDiv(_specTargetNow() * burnedEarnShares, _valueScale()));

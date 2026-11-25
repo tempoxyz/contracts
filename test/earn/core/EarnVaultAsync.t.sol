@@ -868,30 +868,34 @@ contract EarnVaultAsyncTest is Test {
         assertTrue(feeCore.isAccountingAligned());
     }
 
-    function testCancellationChargesOnlyGrowthWhileQueued() public {
+    function testRequestThenCancelDoesNotEscapeWaitingFees() public {
         address feeRecipient = address(0xFEE);
+        uint256 principal = 2_000_000e6;
+
+        // Without a request, 0.9 of a step waits and a later step charges 10% of all 1.9 steps.
+        (,, CoreMockAsyncEngine refEngine, EarnVault refCore) = _newFeeAsyncWithDecimals(feeRecipient, 6);
+        _depositInto(refCore, principal);
+        refEngine.setRate(1 ether + 0.9e12);
+        refCore.accrueFees();
+        refEngine.setRate(1 ether + 1.9e12);
+        refCore.accrueFees();
+        uint256 refFeeValue = _valueOf(refCore, IEarnFees(refCore.earnFees()).claimableEarnShares(feeRecipient));
+        assertApproxEqAbs(refFeeValue, 380_000, 2);
+
+        // Most of the pool requests and cancels at once while 0.9 of a step waits: the cancellation charges that
+        // waiting growth, so the pool pays the same in total.
         (,, CoreMockAsyncEngine feeEngine, EarnVault feeCore) = _newFeeAsyncWithDecimals(feeRecipient, 6);
         IEarnFees feeModule = IEarnFees(feeCore.earnFees());
-        uint256 principal = 2_000_000e6;
         _depositInto(feeCore, principal);
-
-        // Half a step of growth waits above the mark when the request is made; nothing grows while it is queued.
-        feeEngine.setRate(1 ether + 0.5e12);
+        feeEngine.setRate(1 ether + 0.9e12);
         vm.prank(user);
-        bytes32 first = feeCore.requestRedeem(principal / 2, "", receiver);
+        bytes32 requestId = feeCore.requestRedeem(principal * 9 / 10, "", receiver);
         vm.prank(user);
-        feeCore.cancelRedeem(first, 1);
-        assertEq(feeModule.claimableEarnShares(feeRecipient), 0);
-
-        // A step of growth while queued is charged, and only that: the active pool's growth is charged first.
-        vm.prank(user);
-        bytes32 second = feeCore.requestRedeem(principal / 2, "", receiver);
-        feeEngine.setRate(1 ether + 1.5e12);
+        feeCore.cancelRedeem(requestId, 1);
+        feeEngine.setRate(1 ether + 1.9e12);
         feeCore.accrueFees();
-        uint256 activeFeeShares = feeModule.claimableEarnShares(feeRecipient);
-        vm.prank(user);
-        feeCore.cancelRedeem(second, 1);
-        assertApproxEqAbs(_valueOf(feeCore, feeModule.claimableEarnShares(feeRecipient) - activeFeeShares), 100_000, 2);
+        uint256 feeValue = _valueOf(feeCore, feeModule.claimableEarnShares(feeRecipient));
+        assertApproxEqAbs(feeValue, refFeeValue, 3);
         assertTrue(feeCore.isAccountingAligned());
     }
 

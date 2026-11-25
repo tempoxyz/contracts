@@ -1,9 +1,9 @@
 {
   "claim.all": "318537",
-  "deposit.large-pool.one-second-yield": "163782",
-  "deposit.steady": "163323",
-  "deposit.yield": "466484",
-  "deposit.yield.after-claims": "466484",
-  "redeem.steady": "152249",
-  "redeem.yield": "457410"
+  "deposit.large-pool.one-second-yield": "163676",
+  "deposit.steady": "163217",
+  "deposit.yield": "466369",
+  "deposit.yield.after-claims": "466369",
+  "redeem.steady": "152143",
+  "redeem.yield": "457295"
 }

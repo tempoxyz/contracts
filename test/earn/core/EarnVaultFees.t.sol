@@ -281,6 +281,20 @@ contract EarnVaultFeesTest is Test {
         assertGe(cadenceFeeEarnShares + charges, singleFeeEarnShares);
     }
 
+    function testConfigChangeNeverChargesEarlierWaitingGrowthUnderNewTerms() public {
+        address newRecipient = address(0xBEEF);
+        // Half a step of growth waits when the recipient changes; only growth after the change goes to the new one.
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _deposit(user, 100_000_000);
+        asset.mint(address(venue), 50);
+        earnVault.setFeeConfig(_fixedConfig(newRecipient, 1_000));
+        assertEq(fees.claimableEarnShares(fixedRecipient), 0);
+        asset.mint(address(venue), 300);
+        (uint256 newFeeAssets,) = earnVault.accrueFees();
+        // Charged and still waiting together are 10% of the 300 units after the change, not of the 350 in all.
+        assertEq(newFeeAssets + _waitingAccrual(6) / 10, 30);
+    }
+
     function testDepositOneSecondAfterYieldWritesNoFeeState() public {
         // A 100M pool one second after a charging checkpoint: one second of 5% yield is far below one step.
         uint256 principal = 100_000_000e6;

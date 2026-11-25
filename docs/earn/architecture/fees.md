@@ -288,7 +288,8 @@ Acceptance cancels any update the previous distributor scheduled but keeps the a
 
 Every installed configuration receives the next ID and stays readable through `feeConfig(configId)`.
 Each change settles the old terms first and applies only prospectively, so new rates never reach
-earlier uncheckpointed growth or deposited principal. Integrators must disclose and monitor both
+earlier uncheckpointed growth or deposited principal. Accrual the old terms left waiting below one
+step is forgone: the change raises the high-water mark over it, so the new terms never charge it. Integrators must disclose and monitor both
 authorities, their handoffs, and every pending update.
 
 `disableFees` is the operator's emergency stop for stacks without a distributor. It does not read
@@ -309,11 +310,11 @@ The request, finalization, and cancellation sequences are in
 [async redemption](flows.md#async-redemption). At request time the EarnVault checkpoints the active
 pool, burns the requester's EarnShare, moves the corresponding engine shares into the engine queue,
 and records the claim. If fees are active and the valuation is fresh, `EarnFees` also stores a
-snapshot in one storage slot: the higher of the high-water mark and the value per EarnShare the
-request's checkpoint settled to, and the current grown target, each scaled to the burned EarnShare
-(rounded up), the configuration ID, and the request time. Accrual still waiting below one step
-leaves with the request uncharged, as with any exit, so a cancellation charges only growth while
-queued. The burned EarnShare stays in the EarnVault's request record, which passes it back on
+snapshot in one storage slot: the high-water mark and the current grown target, each scaled to the
+burned EarnShare (rounded up), the configuration ID, and the request time. Accrual still waiting
+below one step stays chargeable: a finalized request takes it uncharged, as any exit does, while a
+cancellation charges it with the growth while queued, so a request cancelled at once still pays it.
+The burned EarnShare stays in the EarnVault's request record, which passes it back on
 cancellation.
 
 Active holders keep earning and paying fees while the claim is open. Finalization pays the engine's
@@ -324,8 +325,9 @@ Cancellation returns the queued position to the active pool. After checkpointing
 the EarnVault measures the returned engine shares. The snapshot is charged only if it exists, fees
 were not disabled at or after its request time, fees are not disabled, and the valuation is fresh. A charged
 snapshot runs the waterfall under its own configuration against the returned value, using the
-snapshot's high-water mark and a target grown from the request time, so only positive queued growth
-pays. It charges all of that growth, with no waiting step, since cancellation closes the snapshot.
+snapshot's high-water mark and a target grown from the request time, so only positive growth above
+that mark pays. It charges all of that growth, with no waiting step, since cancellation closes the
+snapshot.
 The re-entry is:
 
 - into an empty active pool, the originally burned EarnShare;
