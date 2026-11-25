@@ -63,9 +63,9 @@ describe('hosted E2E workflow', () => {
         network: 'moderato',
         profile: 'profiles/e2e-moderato/profile.json',
       })
-      expect(resolveNetwork('profiles/veda-mainnet/profile.json')).toEqual({
-        network: 'mainnet',
-        profile: 'profiles/veda-mainnet/profile.json',
+      expect(resolveNetwork('profiles/veda-moderato/profile.json')).toEqual({
+        network: 'moderato',
+        profile: 'profiles/veda-moderato/profile.json',
       })
     })
 
