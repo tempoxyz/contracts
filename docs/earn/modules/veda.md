@@ -156,10 +156,12 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
    receiver cannot accept the payout, that request becomes claimable and stays earmarked until anyone
    calls `claimRedeem` successfully. Each payout in the batch, the receiver's `onRedeemFinalized` hook
    included, runs with at most 2,000,000 gas, so one receiver cannot use up the batch's gas;
-   `claimRedeem` has no such limit. An unsolved request cannot draw on another request's funds. While
-   a batch finalizes, its earmark stays in transient storage, which `settled` and `sweepDust` count;
-   only the amounts of failed payouts are written to the persistent ledger, so a batch whose payouts
-   all succeed writes no ledger slot.
+   `claimRedeem` has no such limit. The hook gets roughly 63/64 of what remains after the payout; if
+   it runs out, the payout still completes, the claim is paid, and the hook is not retried. An
+   unsolved request cannot draw on another request's funds. While a batch finalizes, its earmark
+   stays in transient storage, which `settled` and `sweepDust` count; only the amounts of failed
+   payouts are written to the persistent ledger, so a batch whose payouts all succeed writes no ledger
+   slot.
 3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`,
    checks that the returned request hashes to the request ID, and requires its BoringVault-share
    balance to rise by exactly that request's `amountOfShares` (`InvalidTrackedRequest`,
