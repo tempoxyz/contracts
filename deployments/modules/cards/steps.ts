@@ -122,13 +122,7 @@ export const enableCardProgram = defineAuthorityStep({
   satisfied: async (client, profile) => {
     const { spenderFactory, spenderId } = configuredCards(profile)
     const handler = cardReleases.tempoSpend(spenderFactory)
-    const code = await client.getCode({ address: handler })
-    if (!code || code === '0x')
-      throw new Error(
-        'Release "TS" handler ' +
-          handler +
-          ' has no code; run pnpm card-release <network> tempoSpend first',
-      )
+    await requireHandlerCode(client, handler)
     return cardProgramEnabled(client, { factory: spenderFactory, handler, spenderId })
   },
   handoff: (profile, outputs) =>
@@ -277,6 +271,17 @@ export async function profileCardProgram(
     args: [spenderId, releases.bridgeProvider(spenderFactory, spenderId)],
   })
   return { program: getAddress(program), routerFactory: getAddress(routerFactory) }
+}
+
+/** Refuses a release "TS" handler with no code, which Bridge must never be handed. */
+export async function requireHandlerCode(client: Pick<ChainClient, 'getCode'>, handler: Address) {
+  const code = await client.getCode({ address: handler })
+  if (!code || code === '0x')
+    throw new Error(
+      'Release "TS" handler ' +
+        handler +
+        ' has no code; run pnpm card-release <network> tempoSpend first',
+    )
 }
 
 /**

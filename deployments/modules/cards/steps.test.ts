@@ -27,6 +27,7 @@ import {
   deployCardProgram,
   enableCardProgram,
   profileCardProgram,
+  requireHandlerCode,
 } from './steps.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as Address
@@ -268,10 +269,11 @@ describe('enable-card-program', () => {
   })
 
   test('refuses a release handler with no code', async () => {
-    const client = { ...factory(handler, true), getCode: vi.fn(async () => '0x' as Hex) }
-    await expect(enableCardProgram.satisfied(client as never, profile, outputs)).rejects.toThrow(
+    const client = (code: Hex) => ({ getCode: vi.fn(async () => code) })
+    await expect(requireHandlerCode(client('0x'), handler)).rejects.toThrow(
       'has no code; run pnpm card-release',
     )
+    await expect(requireHandlerCode(client('0x60'), handler)).resolves.toBeUndefined()
   })
 
   test('names each Bridge call with its submitter and calldata', () => {
