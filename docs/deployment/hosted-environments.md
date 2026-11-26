@@ -20,6 +20,8 @@ Other stacks are under [external deployments](#external-deployments).
   stack for hosted Zone E2E and the scheduled [benchmark](benchmarks.md), with a bootstrapped
   `fixture.json`. Protected policies and alternate stablecoins remain
   E2E-only fixtures.
+- [`e2e-moderato-v2`](../../profiles/e2e-moderato-v2/profile.json) is the same Zone 3 stack built on the
+  current factory release, sharing `e2e-moderato`'s fixture, for hosted E2E of the current Earn contracts.
 
 ## Adding a hosted network
 

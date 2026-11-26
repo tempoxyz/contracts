@@ -433,6 +433,13 @@ const reviewedDeploymentIdentities: Readonly<Record<string, ReviewedDeploymentId
       erc4626Engine: getAddress('0x0d57c10249eb3a92b7d81bBA6221F80F2865448A'),
     },
   },
+  '42431:e2e-moderato-v2': {
+    deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
+    factories: {
+      earn: getAddress('0x6c33354f43B8f0e0b4106fe76590A9F24117C5A1'),
+      erc4626Engine: getAddress('0x176859D2983ff25F095BF767F4F49dDd02a1Be62'),
+    },
+  },
 }
 
 /** Rejects a hosted record whose identity has no independent reviewed baseline. Local chains remain disposable. */
