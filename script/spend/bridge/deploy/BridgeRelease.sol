@@ -14,7 +14,7 @@ import { IBridgeSpenderFactory } from "../../../../src/spend/providers/bridge/in
 /// @notice Deterministic creation of our ownerless contracts for Bridge card programs. Each is created
 ///         through the CREATE2 deployer with Earn's release salt (`DeterministicRelease`), so the same
 ///         build and constructor arguments land at the same address whoever deploys them, Bridge or
-///         Tempo's Bridge Release workflow, and a contract that already exists there is reused instead of
+///         Tempo's Deploy workflow, and a contract that already exists there is reused instead of
 ///         created again.
 /// @dev Call the creating functions while broadcasting: Forge routes a broadcast `new X{salt: s}`
 ///      through the CREATE2 deployer. No contract here has an owner, so anyone creating one first at

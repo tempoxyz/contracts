@@ -40,7 +40,7 @@ const routerReleaseScript = 'script/zone/deploy/DeployRouterRelease.s.sol:Deploy
  * The router project's ownerless contracts, released by the shared factory release engine
  * (`deployRelease`) from their own CLI and workflow, and named by no registry entry: the
  * ZoneRouterFactory, a SendSpender, and a ZoneRouter its factory creates. A card program's
- * spender, its CardSpender, releases with the card integration (script/spend/bridge/deploy/release.sh).
+ * spender, its CardSpender, deploys from its profile (modules/cards/), after the card release.
  */
 export const routerReleaseKinds = ['zoneRouterFactory', 'sendSpender', 'zoneRouter'] as const
 

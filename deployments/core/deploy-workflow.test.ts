@@ -38,7 +38,7 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('if [[ -z "${TEMPO_RPC_URL:-}" ]]; then')
     // Resubmission reaches the releases and every profile deploy, and only with broadcast.
     expect(workflow).toContain('RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}')
-    expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(2)
+    expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(3)
     expect(workflow).toContain('deploy+=(--resubmit-verification)')
     expect(workflow).toContain('ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}')
   })
@@ -51,6 +51,7 @@ describe('deploy workflow', () => {
     const deploySteps = [
       'Deploy the factory releases',
       'Deploy the ZoneRouterFactory',
+      'Deploy the card releases',
       'Deploy the profiles',
     ]
     const readers = secretReaders(workflow)
@@ -95,10 +96,11 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('group: hosted-contracts-${{ matrix.network }}')
   })
 
-  test('reconciles the releases, the Zone router factory, then every profile on the network', () => {
+  test('reconciles the releases, the Zone router factory, the card releases, then every profile', () => {
     const steps = [
       'pnpm factory-release "${arguments[@]}"',
       'pnpm zone-router-release "${arguments[@]}"',
+      'pnpm card-release "${arguments[@]}"',
       'pnpm profiles --network "$NETWORK"',
       'pnpm earn "${deploy[@]}"',
     ].map((step) => workflow.indexOf(step))
@@ -106,6 +108,19 @@ describe('deploy workflow', () => {
     expect([...steps].sort((a, b) => a - b)).toEqual(steps)
     expect(workflow).toContain('arguments=("$NETWORK" all ')
     expect(workflow).toContain('arguments=("$NETWORK" zoneRouterFactory --parameters \'{}\' ')
+    expect(workflow).toContain(
+      'arguments=("$NETWORK" all --output "$RUNNER_TEMP/card-release.json")',
+    )
+    // Every release result reaches the summary and the artifact.
+    expect(workflow).toContain(
+      '"$RUNNER_TEMP/zone-router-release.json" "$RUNNER_TEMP/card-release.json"',
+    )
+    expect(workflow).toContain('${{ runner.temp }}/card-release.json')
+  })
+
+  test('replaces the retired Bridge Release workflow', () => {
+    const workflows = readdirSync(new URL('../../.github/workflows/', import.meta.url))
+    expect(workflows).not.toContain('bridge-release.yml')
   })
 })
 

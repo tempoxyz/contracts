@@ -63,12 +63,13 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
   derived from `chainId` and `zone.id` using the protocol's reserved ranges.
 - `zoneRouter`: one [`ZoneRouter`](../docs/zone/zone-router.md) mode and the factory that deploys
   it ([Zone routers](#zone-routers)).
+- `cards`: one card program ([card programs](#card-programs)).
 - `targetYield` and `boostRewards`: optional reward periphery ([rewards](#rewards)).
 
 Profiles are not lifecycle controls: removing a capability cannot disable or erase an
 already-deployed immutable contract. Retire its Tempo API operations separately and preserve any
 outstanding Merkle claim path. A changed optional component (`zone`, `targetYield`, `boostRewards`,
-`zoneRouter`, or `zoneRouterFactory`) redeploys only that component's contracts; core and engine
+`zoneRouter`, `zoneRouterFactory`, or `cards`) redeploys only that component's contracts; core and engine
 never change in place.
 Profiles that bind existing production infrastructure name only that infrastructure (venue,
 private asset, pool, and customer ID); E2E derives the deployed base asset from `deployment.json`.
@@ -115,16 +116,46 @@ protected-item and three-slot rules.
 - `spenders`, required with `spend` and rejected otherwise, lists the deployed `ISpender`
   contracts, such as a `SendSpender` from
   [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) or a card program's
-  `CardSpender` from [Bridge Release](../docs/deployment/deployment.md#bridge-releases), without repeats. Their order is part of the
+  `CardSpender` from a profile's [`cards`](#card-programs), without repeats. Their order is part of the
   mode, so of the router's address.
 - `factory` names an existing `ZoneRouterFactory`. Omitted, the lifecycle deploys one as its own
   `zoneRouterFactory` component, so a later mode change deploys only a new router through it.
   A spender accepts spends only from routers of the factory it binds (its `ROUTER_FACTORY`), so a
   mode listing a release `SendSpender` or a card program's `CardSpender` names that factory here,
-  the release `ZoneRouterFactory` for a release `SendSpender`.
+  the release `ZoneRouterFactory` for either.
 
 A different mode is a new router at a new address, which the Zone must admit again
 ([lifecycle](../docs/zone/zone-router.md#deployment)).
+
+## Card programs
+
+`cards` deploys one card program: a [`CardSpender`](../docs/spend/README.md) and its provider
+contract, created by the release `CardFactory` at the address the provider and program ID fix, as
+the provider's own deploy scripts would. Only Bridge programs deploy here; any other `provider` is
+refused.
+
+```json
+{
+  "cards": {
+    "provider": "bridge",
+    "spenderId": "0x..."
+  }
+}
+```
+
+- `spenderId` is the program's Bridge spender ID, whose clone Bridge's manager already created.
+- The `SpenderFactory` is the network's, declared once in `bridgeSpenderFactories`
+  ([`deployments/modules/cards/profile.ts`](../deployments/modules/cards/profile.ts)), never in the
+  profile; a network that declares none refuses `cards`.
+- The program takes spends only from routers of the release `ZoneRouterFactory`, so a `zoneRouter`
+  listing it names that factory. Its address is in `deployment.json` as `cardProgram`, beside the
+  `cardRouterFactory`, `cardFactory` and `cardProvider` it binds.
+
+Deploy releases the `CardFactory` and Bridge's "TS" handler first
+([card releases](../docs/deployment/deployment.md#card-releases)). The calls on Bridge's factory that
+register the handler and allow the program stay with Bridge's admin and governance: the
+`enable-card-program` step hands them off until they are made
+([Bridge deploy runbook](../docs/spend/bridge/deploy.md#deploying-from-a-profile)).
 
 ## Rewards
 
