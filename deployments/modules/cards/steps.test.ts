@@ -18,6 +18,7 @@ import {
 import { activationActions, deploymentActions, presentEarnDeploymentPlan } from '../../core/plan.js'
 import { parseEarnDeploymentProfile } from '../../core/profile.js'
 import { accessMemberContracts, deploymentSteps } from '../index.js'
+import type { AccessMember } from '../module.js'
 import {
   adoptCardProgram,
   cardProgramBound,
@@ -50,7 +51,8 @@ const outputs = {
   cardProvider: address('b0'),
   cardProgram: address('c0'),
 }
-const clone = address('c1'),
+// The forge-checked Solady prediction for this factory and spender ID.
+const clone = getAddress('0xcff1550C6f04F082aEBA19bB1b085B1D4f0bf639'),
   handler = address('75')
 
 /** A program, provider, CardFactory and Bridge factory that agree, with one answer overridable. */
@@ -130,8 +132,10 @@ describe('deploy-card-program', () => {
     expect(deployCardProgram.source).toMatchObject({
       output: 'cardProgram',
       contract: 'src/spend/CardSpender.sol:CardSpender',
-      accessMember: true,
     })
+    const member = deployCardProgram.source!.accessMember as Exclude<AccessMember, true>
+    expect(Object.keys(member.principals)).toEqual(['PAYOUT_TARGET'])
+    expect(member.principals.PAYOUT_TARGET!(profile)).toBe(clone)
     expect(deployCardProgram.source!.constructorArgs(profile, outputs)).toBe(
       encodeAbiParameters(parseAbiParameters('address, address'), [
         outputs.cardProvider,
@@ -151,6 +155,11 @@ describe('deploy-card-program', () => {
     ['binds another SpenderFactory', { FACTORY: address('96') }, false],
     ['binds another program ID', { SPENDER_ID: `0x${'6'.repeat(64)}` }, false],
     ['pays through a stale clone', { getSpenderAddress: address('95') }, false],
+    [
+      'pays through a clone the ID was added to',
+      { getSpenderAddress: address('95'), CLONE: address('95'), PAYOUT_TARGET: address('95') },
+      false,
+    ],
     ['does not answer', { PAYOUT_TARGET: new Error('reverted') }, false],
   ])('is bound only when the recorded program %s', async (_, overrides, bound) => {
     expect(await cardProgramBound(chain(overrides) as never, profile, outputs)).toBe(bound)
@@ -237,9 +246,8 @@ describe('adoptCardProgram', () => {
 describe('enable-card-program', () => {
   const factory = (registered: Address, permitted: boolean) => ({
     readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
-      if (functionName === 'getSpenderHandler') return registered
       if (functionName === 'getSpenderAddress') return clone
-      if (permitted) return handler
+      if (permitted) return registered
       throw new Error('SpenderHandlerNotAllowed')
     }),
   })
@@ -257,6 +265,13 @@ describe('enable-card-program', () => {
       functionName: 'getSpenderHandlerWithCheckedPermissions',
       args: [stringToHex('TS', { size: 2 }), clone],
     })
+  })
+
+  test('refuses a release handler with no code', async () => {
+    const client = { ...factory(handler, true), getCode: vi.fn(async () => '0x' as Hex) }
+    await expect(enableCardProgram.satisfied(client as never, profile, outputs)).rejects.toThrow(
+      'has no code; run pnpm card-release',
+    )
   })
 
   test('names each Bridge call with its submitter and calldata', () => {

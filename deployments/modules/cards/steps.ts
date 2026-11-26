@@ -26,7 +26,7 @@ import {
   type ChainClient,
   type StepAuthority,
 } from '../module.js'
-import { configuredCards } from './profile.js'
+import { canonicalBridgeClone, configuredCards } from './profile.js'
 import { cardReleases } from './release.js'
 
 /** Bridge's role holders on its `SpenderFactory`; no key for either is ever configured here. */
@@ -77,8 +77,16 @@ export const deployCardProgram = defineFoundryStep({
   source: {
     output: 'cardProgram',
     contract: 'src/spend/CardSpender.sol:CardSpender',
-    // A program spending Earn positions moves EarnShare and the vault asset.
-    accessMember: true,
+    // A program spending Earn positions moves EarnShare and the vault asset through its Bridge clone.
+    accessMember: {
+      abi: cardSpenderAbi,
+      principals: {
+        PAYOUT_TARGET: (profile) => {
+          const { spenderFactory, spenderId } = configuredCards(profile)
+          return canonicalBridgeClone(spenderFactory, spenderId)
+        },
+      },
+    },
     constructorArgs: (_profile, outputs) =>
       encodeAbiParameters(parseAbiParameters('address, address'), [
         requiredOutput(outputs, 'cardProvider'),
@@ -111,13 +119,17 @@ export const enableCardProgram = defineAuthorityStep({
   intent: ['cards'],
   enabled: hasCards,
   signerAvailable: () => false,
-  satisfied: (client, profile) => {
+  satisfied: async (client, profile) => {
     const { spenderFactory, spenderId } = configuredCards(profile)
-    return cardProgramEnabled(client, {
-      factory: spenderFactory,
-      handler: cardReleases.tempoSpend(spenderFactory),
-      spenderId,
-    })
+    const handler = cardReleases.tempoSpend(spenderFactory)
+    const code = await client.getCode({ address: handler })
+    if (!code || code === '0x')
+      throw new Error(
+        'Release "TS" handler ' +
+          handler +
+          ' has no code; run pnpm card-release <network> tempoSpend first',
+      )
+    return cardProgramEnabled(client, { factory: spenderFactory, handler, spenderId })
   },
   handoff: (profile, outputs) =>
     cardProgramHandoff({
@@ -175,6 +187,8 @@ export async function cardProgramBound(
       same(providerFactory, spenderFactory) &&
       providerSpenderId.toLowerCase() === spenderId.toLowerCase() &&
       same(clone, factoryClone) &&
+      // Bridge can register an ID against an existing clone, which the "TS" handler rejects.
+      same(clone, canonicalBridgeClone(spenderFactory, spenderId)) &&
       same(payoutTarget, clone)
     )
   } catch {
@@ -274,18 +288,13 @@ export async function cardProgramEnabled(
   options: { factory: Address; handler: Address; spenderId: Hex },
 ) {
   const contract = { address: options.factory, abi: bridgeSpenderFactoryAbi } as const
-  const registered = await client.readContract({
-    ...contract,
-    functionName: 'getSpenderHandler',
-    args: [tempoSpendPrefix],
-  })
-  if (getAddress(registered) !== getAddress(options.handler)) return false
   const clone = await client.readContract({
     ...contract,
     functionName: 'getSpenderAddress',
     args: [options.spenderId],
   })
-  // The factory refuses a disabled handler, and a gated one for a clone it has not allowlisted.
+  // One read: the factory refuses a disabled handler and a gated one for a clone it has not
+  // allowlisted, and otherwise returns the handler it runs for "TS".
   return client
     .readContract({
       ...contract,
@@ -293,7 +302,7 @@ export async function cardProgramEnabled(
       args: [tempoSpendPrefix, clone],
     })
     .then(
-      () => true,
+      (served) => getAddress(served) === getAddress(options.handler),
       () => false,
     )
 }

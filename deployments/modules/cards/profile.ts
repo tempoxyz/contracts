@@ -1,4 +1,4 @@
-import type { Address, Hex } from 'viem'
+import { concatHex, getContractAddress, keccak256, type Address, type Hex } from 'viem'
 
 import { hostedEnvironment, type HostedEnvironmentId } from '../../chain/tempo.js'
 import { address, exactKeys, isBytes32, literal, object } from '../../core/parse.js'
@@ -94,4 +94,24 @@ export function parseCards(
     spenderFactory: address(spenderFactory, `${path}.spenderFactory`),
     spenderId: cards.spenderId.toLowerCase() as Hex,
   }
+}
+
+/**
+ * The clone Bridge's `createSpender(spenderId)` creates: Solady's ERC1967 beacon proxy with the factory as
+ * beacon and deployer. The "TS" handler rejects a program whose clone is any other address.
+ */
+export function canonicalBridgeClone(spenderFactory: Address, spenderId: Hex) {
+  const initCode = concatHex([
+    '0x60523d8160223d3973',
+    spenderFactory,
+    '0x60195155f3363d3d373d3d363d602036600436635c60da',
+    '0x1b60e01b36527fa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6c',
+    '0xb3582b35133d50545afa5036515af43d6000803e604d573d6000fd5b3d6000f3',
+  ])
+  return getContractAddress({
+    opcode: 'CREATE2',
+    from: spenderFactory,
+    salt: spenderId,
+    bytecodeHash: keccak256(initCode),
+  })
 }
