@@ -165,11 +165,12 @@ jobs:
               continue
             fi
             output="$RUNNER_TEMP/profile-output.txt"
-            # Forge shares stdout; the result is the last top-level JSON object printed.
+            # Forge shares stdout; the result is the last top-level JSON object printed. Multi-line
+            # handoffs fold to one line for the summary table row and the error annotation.
             deploy=(deploy "$path" --json)
             if [[ "$RESUBMIT" == 'true' ]]; then deploy+=(--resubmit-verification); fi
             if pnpm earn "${deploy[@]}" | tee "$output"; then
-              state=$(awk '/^\{$/ { result = "" } { result = result $0 "\n" } END { printf "%s", result }' "$output" | jq -r '.state + (if .instructions then ": " + .instructions else "" end)')
+              state=$(awk '/^\{$/ { result = "" } { result = result $0 "\n" } END { printf "%s", result }' "$output" | jq -r '.state + (if .instructions then ": " + .instructions else "" end) | gsub("\\s*\\n\\s*"; " ")')
             else
               state='failed; see its output'
             fi
