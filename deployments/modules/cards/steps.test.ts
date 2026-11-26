@@ -17,7 +17,7 @@ import {
 } from '../../abis/index.js'
 import { activationActions, deploymentActions, presentEarnDeploymentPlan } from '../../core/plan.js'
 import { parseEarnDeploymentProfile } from '../../core/profile.js'
-import { accessMemberContracts } from '../index.js'
+import { accessMemberContracts, deploymentSteps } from '../index.js'
 import {
   adoptCardProgram,
   cardProgramBound,
@@ -25,6 +25,7 @@ import {
   cardProgramHandoff,
   deployCardProgram,
   enableCardProgram,
+  profileCardProgram,
 } from './steps.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as Address
@@ -153,6 +154,37 @@ describe('deploy-card-program', () => {
     ['does not answer', { PAYOUT_TARGET: new Error('reverted') }, false],
   ])('is bound only when the recorded program %s', async (_, overrides, bound) => {
     expect(await cardProgramBound(chain(overrides) as never, profile, outputs)).toBe(bound)
+  })
+})
+
+describe('profileCardProgram', () => {
+  const releases = {
+    cardFactory: () => ({
+      routerFactory: outputs.cardRouterFactory,
+      cardFactory: outputs.cardFactory,
+    }),
+    bridgeProvider: () => outputs.cardProvider,
+  }
+
+  test('predicts the program the profile deploys, with the release router factory', async () => {
+    const client = { ...chain(), getCode: vi.fn(async () => '0x60' as Hex) }
+    await expect(profileCardProgram(client as never, profile, releases)).resolves.toEqual({
+      program: outputs.cardProgram,
+      routerFactory: outputs.cardRouterFactory,
+    })
+  })
+
+  test('has none without a program or a release CardFactory', async () => {
+    const client = { ...chain(), getCode: vi.fn(async () => '0x' as Hex) }
+    await expect(profileCardProgram(client as never, profile, releases)).resolves.toBeUndefined()
+    await expect(
+      profileCardProgram(client as never, { cards: null }, releases),
+    ).resolves.toBeUndefined()
+  })
+
+  test('deploys before the Zone router that may list it as a spender', () => {
+    const ids = deploymentSteps.map(({ id }) => id)
+    expect(ids.indexOf('deploy-card-program')).toBeLessThan(ids.indexOf('deploy-zone-router'))
   })
 })
 

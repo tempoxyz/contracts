@@ -243,6 +243,29 @@ export async function adoptCardProgram(
 }
 
 /**
+ * The program `deploy-card-program` creates or adopts for the profile, with the release
+ * `ZoneRouterFactory` it takes spends from; `undefined` without a program or a release `CardFactory`.
+ */
+export async function profileCardProgram(
+  client: Pick<ChainClient, 'getCode' | 'readContract'>,
+  profile: Pick<EarnDeploymentProfile, 'cards'>,
+  releases: Pick<typeof cardReleases, 'cardFactory' | 'bridgeProvider'> = cardReleases,
+) {
+  if (!profile.cards) return undefined
+  const { spenderFactory, spenderId } = profile.cards
+  const { routerFactory, cardFactory } = releases.cardFactory()
+  const code = await client.getCode({ address: cardFactory })
+  if (!code || code === '0x') return undefined
+  const program = await client.readContract({
+    address: cardFactory,
+    abi: cardFactoryAbi,
+    functionName: 'predict',
+    args: [spenderId, releases.bridgeProvider(spenderFactory, spenderId)],
+  })
+  return { program: getAddress(program), routerFactory: getAddress(routerFactory) }
+}
+
+/**
  * Whether Bridge's factory runs `handler` as its "TS" handler and lets it serve the program's
  * clone: enabled for every program, or gated with the clone allowlisted.
  */

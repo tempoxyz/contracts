@@ -53,9 +53,10 @@ const steps = [
   deployCore,
   bindCore,
   deployRouter,
+  // Before the Zone router, whose spenders may include the profile's own card program.
+  deployCardProgram,
   deployZoneRouterFactory,
   deployZoneRouter,
-  deployCardProgram,
   deployMerkleDistributor,
   validateAccess,
   deployContributionController,

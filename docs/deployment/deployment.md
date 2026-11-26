@@ -487,9 +487,9 @@ the reward treasury.
 | `deploy-core`                    | deployment | deployer                                                                               | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
 | `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)                   | Bind EarnVault and atomically transfer the engine to the configured final owner |
 | `deploy-router`                  | deployment | deployer                                                                               | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `deploy-card-program`            | deployment | deployer                                                                               | [Card releases](#card-releases)                                                 |
 | `deploy-zone-router-factory`     | deployment | deployer                                                                               | [Zone router](../zone/zone-router.md#deployment)                                |
 | `deploy-zone-router`             | deployment | deployer                                                                               | [Zone router](../zone/zone-router.md#deployment)                                |
-| `deploy-card-program`            | deployment | deployer                                                                               | [Card releases](#card-releases)                                                 |
 | `deploy-merkle-distributor`      | deployment | deployer                                                                               | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `validate-access`                | deployment | deployer                                                                               | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
 | `deploy-contribution-controller` | deployment | deployer                                                                               | [Rewards](../earn/modules/rewards.md#installation)                              |
@@ -784,4 +784,5 @@ release addresses identify the first three; the program is source verified again
 `ProgramDeployed` event that created it, which a program Bridge deployed with its own scripts also
 has. Unlike a Zone router, a recorded program is never replaced for a new build, since cardholder
 keys and routers point at its address; a later `ZoneRouterFactory` or `CardFactory` release also
-leaves it as it is. A new program is a change of `spenderId` or provider.
+leaves it as it is. A new program is a change of `spenderId` or provider. The program deploys before the Zone router, so a Spend-mode router in the same profile may list
+it in `zoneRouter.spenders`; preflight accepts its predicted address before it holds code.
