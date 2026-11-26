@@ -129,7 +129,7 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         return assets;
     }
 
-    /// @custom:ensures msg.sender == earnVault && assets > 0 && engineShares == assets
+    /// @custom:ensures msg.sender == old(earnVault) && assets > 0 && engineShares == assets
     /// @custom:ensures heldAfter == heldBefore + engineShares
     function deposit(uint256 assets) external nonReentrant onlyEarnVault returns (uint256 engineShares) {
         if (assets == 0) revert InvalidAmount();
@@ -150,7 +150,7 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         emit Deposited(msg.sender, assets, engineShares);
     }
 
-    /// @custom:ensures msg.sender == earnVault && engineShares > 0 && assets >= minAssets
+    /// @custom:ensures msg.sender == old(earnVault) && engineShares > 0 && assets >= minAssets
     /// @custom:ensures heldAfter + engineShares == heldBefore
     function redeem(uint256 engineShares, address receiver, uint256 minAssets)
         external
@@ -165,7 +165,7 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         emit Redeemed(receiver, engineShares, assets);
     }
 
-    /// @custom:ensures msg.sender == earnVault && assets > 0 && engineShares == assets
+    /// @custom:ensures msg.sender == old(earnVault) && assets > 0 && engineShares == assets
     /// @custom:ensures heldAfter + engineShares == heldBefore
     function withdraw(uint256 assets, address receiver)
         external
