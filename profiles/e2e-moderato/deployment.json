@@ -4,14 +4,14 @@
   "deployer": "0x20b0Adf5bec8Cd881CC1795A04C1F33888769132",
   "owner": "0x20b0Adf5bec8Cd881CC1795A04C1F33888769132",
   "factories": {
-    "earn": "0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC",
-    "erc4626Engine": "0x0d57c10249eb3a92b7d81bBA6221F80F2865448A"
+    "earn": "0x6c33354f43B8f0e0b4106fe76590A9F24117C5A1",
+    "erc4626Engine": "0x176859D2983ff25F095BF767F4F49dDd02a1Be62"
   },
-  "deploymentIntentHash": "5c3bdd754d7dae0cbe59d2de9e7552f6c89c67962213da2af8959e6fe62a00e1",
+  "deploymentIntentHash": "d3d1abd4423c065191af0740b79bc41a970eb3774e7ae3bc2377345c89ec0591",
   "componentDeploymentIntentHashes": {
-    "core": "6d5b200640d99bef9c661d825dc4be0ebbe4fe5930db10b1e8afeeec272219bf",
-    "engine": "1201841cf2a91f4560ac453a3c221195d5dc57f68c74104a72d25b055cc491c9",
-    "zone": "bd4688578ee4f6056d7a38fbdcc400999af48c6ca80ba9b8494a7d54e6d1a207",
+    "core": "701a7ecc2d87e118f30169b136ea2795063bcf71f7a416690011284e452a31c0",
+    "engine": "a069fa44d71634564e2831c90af6f6b348fa8c7fb2d4f2e4d6a863a4562c4f3d",
+    "zone": "ff2bd929d1d6ce22b12b4dce9ac57d470e534ded14c3697058e348a10c7cf600",
     "targetYield": null,
     "boostRewards": null,
     "zoneRouterFactory": null,
@@ -28,20 +28,20 @@
     }
   },
   "assetDecimals": 6,
-  "deploymentBlock": "39623853",
-  "generatedAt": "2026-11-24T18:55:19.467Z",
+  "deploymentBlock": "46083212",
+  "generatedAt": "2026-11-26T17:11:10.186Z",
   "source": {
-    "factoryDeploymentId": "0xab99f88789ea56890f6566feaafd7c77c0e7f8b0c4797420c65827bacea6b29b",
-    "commit": "0x35b5786f40a143f36959d83edccae19710cfe69d",
-    "treeDirty": true,
-    "foundryVersion": "forge Version: 1.8.6\nCommit SHA: 6bad0a66de7c83f7b33695044138f0f5fa4c5990\nBuild Timestamp: 2026-10-21T17:56:11.890310850Z (1792605371)\nBuild Profile: dist",
+    "factoryDeploymentId": "0xb0a53e3a4450ab8b9d75e903966d8c91385f5acfe12b04fec317dffc634fa512",
+    "commit": "0x413160b1da386b35fab869f6d34c99bae66e05c7",
+    "treeDirty": false,
+    "foundryVersion": "forge Version: 1.8.6\nCommit SHA: 6bad0a66de7c83f7b33695044138f0f5fa4c5990\nBuild Timestamp: 2026-10-21T17:44:12.747118000Z (1792604652)\nBuild Profile: dist",
     "contractVerification": "verified",
     "verifierUrl": "https://contracts.tempo.xyz",
     "contracts": {
       "earnFees": {
         "kind": "minimal-proxy",
-        "implementation": "0x15dF1d07D3F4686cDDE07515901e5a2dbA1fb612",
-        "implementationCodeHash": "0x10f399de31fead6aade2ba55138c8fd6fee3be6ac024c8208b96efdd2fe97b5a"
+        "implementation": "0xfACaA2607d7DEc429d5D9C2c6856AbAe9C43d0CE",
+        "implementationCodeHash": "0xb0ae5b9f7621188857a0355c38729e0182c7cc873fbb4d2ade81db9ba5213058"
       },
       "earnShare": {
         "kind": "protocol-native",
@@ -51,15 +51,15 @@
         "kind": "source",
         "name": "ERC4626Engine",
         "match": "exact_match",
-        "sourceInputsHash": "0x78db489739d631722f7d32791a19c2e00518bcd2a240d067beaf13bf43cc56dc"
+        "sourceInputsHash": "0x6b5d0ac18fc909ce1690fccda63991f3cbd595b7de081147cc08360ece3c4543"
       },
       "earnVault": {
         "kind": "erc1967-proxy",
         "name": "ERC1967Proxy",
         "match": "exact_match",
         "sourceInputsHash": "0x46349656a8817b8c6dc43f05e8e5dda434f1a712746b87b57f1c2275e5fafc84",
-        "implementation": "0x5E9B9A012b4C8A68A1E48Ebae993F001F1EBf79c",
-        "implementationCodeHash": "0x05d2ac6246faa85aa2e68d755e60d2d17c5a66e0b6e57d1946c49968915c40a8"
+        "implementation": "0x47d3216Cf8a75E7B2855F1BBc94825D89487EeA2",
+        "implementationCodeHash": "0xa243e716be1d9a3ca728c570937a30ba2de04d41cabf8d2aed8072b10ac92231"
       },
       "earnRouter": {
         "kind": "source",
@@ -72,43 +72,43 @@
   "runtimeCodeHashes": {
     "zonePortal": "0x620678cab8cbffe25fab0e4d29c360ba2f7b55076bad1a7e730e80866211a795",
     "asset": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
-    "engine": "0xf20996795727a528c1e68f81816989cb5a7bb716a90626ba755764aff2de0727",
-    "earnFees": "0x70d3f0a433a192d8db9ff956609f9e920faffdedbde819cb20c53faac7eb1602",
+    "engine": "0x347aee4d33b2f6233d5cf8c58de71868fa72b64ce8dfcdd46d707210e62f42d4",
+    "earnFees": "0x8c8d29cd56aa843f712ebdceb118ff5bfd96c2008352258a6991508ea2901bbd",
     "earnShare": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
-    "earnVault": "0x2267e2e062f38379d4c0a254af36f49c30b5a735f4311dd575958e4c1d87afb1",
-    "earnRouter": "0x7c024ab149dab3eded35fc0bff7e725fe85ad1d08b6700ff6a441df793dffb5d"
+    "earnVault": "0xedb92b7865241eb987a8e046fcf6c7abe3397f7a117093392b13179a91b6b544",
+    "earnRouter": "0x77847dbf760527b566f24b957b5b20abd1b72347b902ff0d15806a3d1e9fafe5"
   },
   "addresses": {
     "zonePortal": "0x5Ad0000000000000000000000000000000000003",
     "zoneMessenger": "0x5A4d000000000000000000000000000000000000",
     "zoneOutbox": "0x1c00000000000000000000000000000000000002",
     "asset": "0x20c00000000000000000000024c6653e25eaE22B",
-    "engine": "0x6bd462E528d7215E4B09E07b43B6A95Cd59F3028",
-    "earnFees": "0x3d3e6750B67003269404b08C3fdf7Cd6F66b6760",
-    "earnShare": "0x20C00000000000000000000054a015ca544260f8",
-    "earnVault": "0x0eb6bc4711Bf400684Df14616e049F4b889eb025",
-    "earnRouter": "0x3D3B1701393698cD89c1b64Dc79F6244CF29B586"
+    "engine": "0xDb817852057a25048eb0081d5fFa35187F02ad7b",
+    "earnFees": "0x14c372C156EB885D9644795fA3a328805f80ded7",
+    "earnShare": "0x20C000000000000000000000Fff29A4dAC6C53B5",
+    "earnVault": "0xb090B16f7D7915990C65038fA337acf677d0e660",
+    "earnRouter": "0xE33F0Ca0707c7F81a4A8BAC5A772325555624FC4"
   },
   "actions": {
     "deploy-engine": {
-      "completedAt": "2026-10-15T00:27:11.043Z",
+      "completedAt": "2026-11-26T17:10:38.450Z",
       "verification": "broadcast",
-      "transactions": ["0x940ee1f5fdd0766d18e811780f3122682e681f40b470f071070ed74df606e490"]
+      "transactions": ["0xadaa2fb97d63ba859a0cbee242b62a3aa89e7b485238f8602ade5dcc801078ca"]
     },
     "deploy-core": {
-      "completedAt": "2026-10-15T00:27:29.523Z",
+      "completedAt": "2026-11-26T17:10:50.133Z",
       "verification": "broadcast",
-      "transactions": ["0xf9cc5d01edcba591534a968e1583e54bbcdf4459c4b8db554acf846bb0635c0f"]
+      "transactions": ["0x1f4a7f2a2a12e757717f6f3fe7577885b7ba3355968d39a5926b36807b9c49c5"]
     },
     "bind-core": {
-      "completedAt": "2026-10-15T00:27:32.822Z",
+      "completedAt": "2026-11-26T17:10:54.151Z",
       "verification": "broadcast",
-      "transactions": ["0xd920240c5516596756e27bf0327a4794f0ffc866537115df1015f035abdcdc22"]
+      "transactions": ["0x3c1b83aa52e898a56b1891c09f22b1e41ececdbfc0cbc73dad075226bcd7aff1"]
     },
     "deploy-router": {
-      "completedAt": "2026-11-24T18:55:14.632Z",
+      "completedAt": "2026-11-26T17:11:06.741Z",
       "verification": "broadcast",
-      "transactions": ["0xbbd3159a7688fdcc30844494835a94f3823ba0e7769af5fcf64d40a7c23941fe"]
+      "transactions": ["0xf2e6e046a2fd8ab21b7fc8751a0954b1e8d6f47c6e372b8aebf3d52802c126a9"]
     }
   }
 }

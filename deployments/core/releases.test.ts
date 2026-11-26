@@ -11,30 +11,43 @@ import {
 const address = `0x${'1'.repeat(40)}` as const
 
 describe('assertReviewedDeploymentIdentity', () => {
-  test.each(['veda-moderato', 'e2e-moderato'])(
-    'preserves the reviewed historical release of %s',
-    (id) => {
-      const record = JSON.parse(
-        readFileSync(new URL(`../../profiles/${id}/deployment.json`, import.meta.url), 'utf8'),
-      )
-      const identity = { ...record, chainId: record.target.chainId }
-      expect(() => assertReviewedDeploymentIdentity(identity)).not.toThrow()
-      expect(() => assertReviewedDeploymentIdentity({ ...identity, deployer: address })).toThrow(
-        'independently reviewed identity',
-      )
-      expect(() =>
-        assertReviewedDeploymentIdentity({
-          ...identity,
-          factories: resolveEarnFactoryRelease(identity.chainId),
-        }),
-      ).toThrow('independently reviewed identity')
-      const altered = { deployer: address, factories: resolveEarnFactoryRelease(identity.chainId) }
-      expect(() => assertReviewedDeploymentIdentity({ ...identity, ...altered }, altered)).toThrow(
-        'independently reviewed identity',
-      )
-      expect(() => assertReviewedDeploymentIdentity(identity, altered)).not.toThrow()
-    },
-  )
+  test.each(['veda-moderato'])('preserves the reviewed historical release of %s', (id) => {
+    const record = JSON.parse(
+      readFileSync(new URL(`../../profiles/${id}/deployment.json`, import.meta.url), 'utf8'),
+    )
+    const identity = { ...record, chainId: record.target.chainId }
+    expect(() => assertReviewedDeploymentIdentity(identity)).not.toThrow()
+    expect(() => assertReviewedDeploymentIdentity({ ...identity, deployer: address })).toThrow(
+      'independently reviewed identity',
+    )
+    expect(() =>
+      assertReviewedDeploymentIdentity({
+        ...identity,
+        factories: resolveEarnFactoryRelease(identity.chainId),
+      }),
+    ).toThrow('independently reviewed identity')
+    const altered = { deployer: address, factories: resolveEarnFactoryRelease(identity.chainId) }
+    expect(() => assertReviewedDeploymentIdentity({ ...identity, ...altered }, altered)).toThrow(
+      'independently reviewed identity',
+    )
+    expect(() => assertReviewedDeploymentIdentity(identity, altered)).not.toThrow()
+  })
+
+  test('admits e2e-moderato only at its reviewed current release', () => {
+    const record = JSON.parse(
+      readFileSync(new URL('../../profiles/e2e-moderato/deployment.json', import.meta.url), 'utf8'),
+    )
+    const identity = { ...record, chainId: record.target.chainId }
+    expect(identity.factories).toEqual(resolveEarnFactoryRelease(identity.chainId))
+    expect(() => assertReviewedDeploymentIdentity(identity)).not.toThrow()
+    expect(() => assertReviewedDeploymentIdentity({ ...identity, deployer: address })).toThrow(
+      'independently reviewed identity',
+    )
+    const altered = { deployer: address, factories: identity.factories }
+    expect(() => assertReviewedDeploymentIdentity({ ...identity, ...altered }, altered)).toThrow(
+      'independently reviewed identity',
+    )
+  })
 
   test('unknown hosted records need separate trust, not a self-consistent record', () => {
     const record = {
