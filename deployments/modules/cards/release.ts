@@ -14,6 +14,8 @@ import {
 } from 'viem'
 
 import { deployBridgeCardsScriptAbi } from '../../abis/index.js'
+import { redactRpcCredentials } from '../../chain/rpc-credentials.js'
+import { sanitizedDiagnostic } from '../../chain/runtime.js'
 import { hostedEnvironment, hostedEnvironments } from '../../chain/tempo.js'
 import {
   create2Deployer,
@@ -218,9 +220,8 @@ if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   try {
     await main()
   } catch (error) {
-    // Plain errors name the failed check; any other error keeps its stack.
-    if (!(error instanceof Error) || error.constructor !== Error) throw error
-    console.error(error.message)
+    // Print only the message, without configured RPC URLs or credentials: RPC errors carry them.
+    console.error(redactRpcCredentials(sanitizedDiagnostic(error), '', process.env))
     process.exitCode = 1
   }
 }

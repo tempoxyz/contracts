@@ -223,9 +223,15 @@ async function preflightZoneRouter(
 ) {
   const router = profile.zoneRouter
   if (!router) return
-  // A card program not yet recorded deploys before the router, bound to the release router factory;
-  // a recorded one is kept and already holds code.
-  const cardProgram = outputs.cardProgram ? undefined : await profileCardProgram(client, profile)
+  // The card program deploys before the router: the recorded one, which a failed broadcast may have
+  // left without code, or else the one the release CardFactory predicts.
+  const cardProgram =
+    outputs.cardProgram && outputs.cardRouterFactory
+      ? {
+          program: getAddress(outputs.cardProgram),
+          routerFactory: getAddress(outputs.cardRouterFactory),
+        }
+      : await profileCardProgram(client, profile)
   const forthcoming = (spender: Address) =>
     cardProgram !== undefined && getAddress(spender) === cardProgram.program
   await requireCode(client, {
