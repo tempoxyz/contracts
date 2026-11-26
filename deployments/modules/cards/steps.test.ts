@@ -137,7 +137,7 @@ describe('deploy-card-program', () => {
         outputs.cardRouterFactory,
       ]),
     )
-    expect(deployCardProgram.source!.replaceOnCodeChange!(profile)).toBe(true)
+    expect(deployCardProgram.source!.replaceOnCodeChange).toBeUndefined()
     expect(accessMemberContracts.map(({ output }) => output)).toContain('cardProgram')
   })
 

@@ -84,8 +84,8 @@ export const deployCardProgram = defineFoundryStep({
         requiredOutput(outputs, 'cardProvider'),
         requiredOutput(outputs, 'cardRouterFactory'),
       ]),
-    // Ownerless and immutable: a program built from other code is replaced, not reused.
-    replaceOnCodeChange: () => true,
+    // A program is never replaced for a new build: cardholder keys and routers point at its address, so
+    // a new program is a deliberate change of spenderId or provider.
   },
   async satisfied(client, profile, outputs) {
     if (!(await deployedOutputs(client, outputs, cardOutputs))) return false

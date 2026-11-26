@@ -782,5 +782,6 @@ through the release `CardFactory`, reusing either when it exists, and records th
 `ZoneRouterFactory` (`cardRouterFactory`), the `CardFactory`, the provider and the program. Their
 release addresses identify the first three; the program is source verified against the
 `ProgramDeployed` event that created it, which a program Bridge deployed with its own scripts also
-has. A program built from other code is replaced like a Zone router; a later `ZoneRouterFactory` or
-`CardFactory` release leaves a recorded program as it is.
+has. Unlike a Zone router, a recorded program is never replaced for a new build, since cardholder
+keys and routers point at its address; a later `ZoneRouterFactory` or `CardFactory` release also
+leaves it as it is. A new program is a change of `spenderId` or provider.
