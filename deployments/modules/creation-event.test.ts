@@ -38,6 +38,18 @@ const profile = parseEarnDeploymentProfile(
   { deployer: address('5'), factories },
 )
 
+/** A router without spenders, which alone may deploy through the registry's released factory. */
+const earnRouterProfile = parseEarnDeploymentProfile(
+  {
+    version: 1,
+    id: 'creation-event-earn-router-test',
+    chainId: 4217,
+    engine: { kind: 'erc4626', venue: address('3') },
+    zoneRouter: { zoneId: 7, ops: ['deposit'], earn: { privateAsset: address('9') } },
+  },
+  { deployer: address('5'), factories },
+)
+
 describe('creationEvent', () => {
   test('identifies the EarnVault in the configured Earn factory creation event', () => {
     expect(deployCore.creationEvent!(profile, {})).toEqual({
@@ -66,7 +78,7 @@ describe('creationEvent', () => {
   test('identifies the router in the released Zone router factory creation event', () => {
     released.zoneRouterFactory = address('8')
     try {
-      expect(deployZoneRouter.creationEvent!(profile, {})).toEqual({
+      expect(deployZoneRouter.creationEvent!(earnRouterProfile, {})).toEqual({
         address: address('8'),
         event: getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' }),
         argument: 'router',
@@ -98,9 +110,20 @@ describe('creationEvent', () => {
   })
 
   test('refuses a Zone router without a released or recorded factory', () => {
-    expect(() => deployZoneRouter.creationEvent!(profile, {})).toThrow(
+    expect(() => deployZoneRouter.creationEvent!(earnRouterProfile, {})).toThrow(
       'No zoneRouterFactory release on mainnet; run pnpm release mainnet and record its registry entry first',
     )
+  })
+
+  test('refuses a Spend router whose spenders bind no recorded factory, even with a release', () => {
+    released.zoneRouterFactory = address('8')
+    try {
+      expect(() => deployZoneRouter.creationEvent!(profile, {})).toThrow(
+        'The ZoneRouterFactory zoneRouter.spenders bind is unresolved; rerun once every spender answers ROUTER_FACTORY',
+      )
+    } finally {
+      released.zoneRouterFactory = undefined
+    }
   })
 
   test('keeps direct deployments without factory creation metadata', () => {

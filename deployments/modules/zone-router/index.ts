@@ -276,7 +276,20 @@ async function preflightZoneRouter(
   if (!router) return
   const { forthcoming, factories } = await spenderFactories(client, profile, outputs)
   const bound = await spenderBoundFactory(client, profile, outputs)
-  const factory = outputs.zoneRouterFactory ?? bound ?? zoneRouterFactory(profile, outputs)
+  const factory =
+    outputs.zoneRouterFactory ??
+    bound ??
+    (router.spenders?.length ? undefined : zoneRouterFactory(profile, outputs))
+  if (!factory) {
+    const missing = factories.findIndex((spenderFactory) => !spenderFactory)
+    if (missing >= 0)
+      throw new Error(
+        `zoneRouter.spenders[${missing}] ${router.spenders![missing]} reports no ROUTER_FACTORY`,
+      )
+    throw new Error(
+      `zoneRouter.spenders bind different ZoneRouterFactories (${[...new Set(factories)].join(', ')}), so no router can spend through all of them`,
+    )
+  }
   // A spender refuses `spendFrom` from any other factory's router.
   for (const [index, spender] of (router.spenders ?? []).entries()) {
     const path = `zoneRouter.spenders[${index}] ${spender}`
@@ -288,7 +301,7 @@ async function preflightZoneRouter(
       )
     }
   }
-  if (!outputs.zoneRouterFactory) {
+  if (!outputs.zoneRouter) {
     // A router not deployed yet is source verified against this build, so only this build's factory
     // can create one; a registry naming another build's factory would also replace routers forever.
     const expected = routerFactoryRelease.address()

@@ -741,10 +741,11 @@ describe('Earn deployment lifecycle', () => {
         chainId: 4217,
         owner: address('4'),
         engine: { kind: 'veda', address: address('1') },
+        // A router without spenders, which alone deploys through the registry's released factory.
         zoneRouter: {
           zoneId: 7,
-          ops: ['spend'],
-          spenders: [address('5e')],
+          ops: ['deposit'],
+          earn: { privateAsset: address('a') },
         },
       },
       { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
@@ -752,9 +753,16 @@ describe('Earn deployment lifecycle', () => {
     chain.getCode.mockImplementation(async () => '0x')
     const checkout = mkdtempSync(join(tmpdir(), 'earn-project-'))
     try {
+      const profilePath = join(checkout, 'profiles', routerProfile.id, 'profile.json')
+      mkdirSync(join(checkout, 'profiles', routerProfile.id), { recursive: true })
+      // The router binds the stack's EarnVault, which an earlier step recorded.
+      savePendingDeployment(profilePath, routerProfile, {
+        ...loadPendingDeployment(profilePath, routerProfile),
+        outputs: { earnVault: address('e') },
+      })
       const step = await prepareLifecycleStep({
         root: checkout,
-        profilePath: join(checkout, 'profiles', routerProfile.id, 'profile.json'),
+        profilePath,
         profile: routerProfile,
         rpcUrl: 'http://chain.test',
         environment: {},
@@ -848,6 +856,8 @@ describe('Earn deployment lifecycle', () => {
       { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
     )
     const router = address('9a')
+    // Discovery records the factory the Spend router's spenders bind.
+    const zoneRouterFactory = address('fb')
     const creation: Hex = `0x${'c1'.repeat(32)}`
     const reuse: Hex = `0x${'7e'.repeat(32)}`
     const step = deploymentStep('deploy-zone-router')
@@ -858,14 +868,20 @@ describe('Earn deployment lifecycle', () => {
     )
     chain.getLogs.mockImplementation(async () => [{ transactionHash: creation }])
     chain.getTransactionReceipt.mockImplementation(async () =>
-      factoryReceipt('deploy-zone-router', routerProfile, { zoneRouter: router }, creation),
+      factoryReceipt(
+        'deploy-zone-router',
+        routerProfile,
+        { zoneRouterFactory, zoneRouter: router },
+        creation,
+      ),
     )
     const checkout = mkdtempSync(join(tmpdir(), 'earn-reuse-'))
     try {
       const root = checkout
       const profilePath = join(checkout, 'profiles', routerProfile.id, 'profile.json')
       mkdirSync(join(checkout, 'profiles', routerProfile.id), { recursive: true })
-      const pending = loadPendingDeployment(profilePath, routerProfile)
+      const loaded = loadPendingDeployment(profilePath, routerProfile)
+      const pending = { ...loaded, outputs: { ...loaded.outputs, zoneRouterFactory } }
       const calldata: Hex = '0x12345678'
       // This run's factory.deploy(mode) succeeded but only returned the router someone created first.
       const broadcast = join(root, 'broadcast', 'DeployZoneRouter.s.sol', '4217')
@@ -915,6 +931,109 @@ describe('Earn deployment lifecycle', () => {
     } finally {
       satisfied.mockRestore()
       rmSync(checkout, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('release contract steps', () => {
+  test('records deploy-card-provider from the chain, never from a stale Forge broadcast', async () => {
+    const cardsProfile = {
+      ...parseEarnDeploymentProfile(
+        {
+          version: 1,
+          id: 'release-step-test',
+          chainId: 4217,
+          owner: address('4'),
+          engine: { kind: 'veda', address: address('1') },
+        },
+        { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+      ),
+      cards: {
+        provider: 'bridge' as const,
+        spenderFactory: address('bf'),
+        spenderId: `0x${'5'.repeat(64)}` as Hex,
+      },
+    }
+    const step = deploymentStep('deploy-card-provider')
+    if (step.execution !== 'foundry' || !step.source?.release)
+      throw new Error('Expected a release source')
+    const provider = address('b0')
+    const unmined: Hex = `0x${'de'.repeat(32)}`
+    const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(true)
+    chain.getTransactionReceipt
+      .mockReset()
+      .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: unmined }))
+    const root = mkdtempSync(join(tmpdir(), 'earn-release-step-'))
+    try {
+      const profilePath = join(root, 'profiles', cardsProfile.id, 'profile.json')
+      mkdirSync(join(root, 'profiles', cardsProfile.id), { recursive: true })
+      const loaded = loadPendingDeployment(profilePath, cardsProfile)
+      const pending = { ...loaded, outputs: { ...loaded.outputs, cardProvider: provider } }
+      savePendingDeployment(profilePath, cardsProfile, pending)
+      const target = 'script/spend/bridge/lifecycle/DeployBridgeCards.s.sol:DeployBridgeCardsScript'
+      const calldata = step.input(
+        cardsProfile,
+        pending.outputs,
+        foundryOutputPath(root, profilePath),
+      )
+      // A dropped hash from an earlier provider run is still in the selector's latest broadcast file.
+      const broadcast = join(
+        foundryBroadcastPath(root, profilePath),
+        'DeployBridgeCards.s.sol',
+        String(cardsProfile.chainId),
+      )
+      mkdirSync(broadcast, { recursive: true })
+      writeFileSync(
+        join(broadcast, `${calldata.slice(2, 10)}-latest.json`),
+        JSON.stringify({ transactions: [{ hash: unmined }], receipts: [] }),
+      )
+      const action = planEarnDeployment(cardsProfile).find(
+        ({ id }) => id === 'deploy-card-provider',
+      )!
+      // After Forge exits, the provider is recorded with chain verification and no transactions.
+      const recorded = await recordFoundryAction({
+        root,
+        profilePath,
+        profile: cardsProfile,
+        rpcUrl: 'http://chain.test',
+        step: {
+          kind: 'foundry',
+          action,
+          root,
+          arguments: ['script', target],
+          environment: {},
+          calldata,
+          rawGasEstimate: false,
+          pending,
+          outputPath: foundryOutputPath(root, profilePath),
+        },
+      })
+      expect(recorded.actions['deploy-card-provider']).toMatchObject({
+        transactions: [],
+        verification: 'chain',
+      })
+      // A resume that finds the provider already satisfied records it the same way.
+      savePendingDeployment(profilePath, cardsProfile, pending)
+      const resumed = await prepareLifecycleStep({
+        root,
+        profilePath,
+        profile: cardsProfile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: [action],
+      })
+      expect(resumed.kind).toBe('complete')
+      expect(resumed.pending.actions['deploy-card-provider']).toMatchObject({
+        transactions: [],
+        verification: 'chain',
+      })
+      expect(chain.getTransactionReceipt).not.toHaveBeenCalled()
+    } finally {
+      satisfied.mockRestore()
+      chain.getTransactionReceipt
+        .mockReset()
+        .mockRejectedValue(new Error('Unexpected receipt request'))
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })

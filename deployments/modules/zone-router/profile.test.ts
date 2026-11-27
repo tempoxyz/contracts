@@ -256,14 +256,22 @@ describe('zoneRouter profile', () => {
   })
 
   test('deploys through the recorded factory, else the released one', () => {
+    const earn = parse(presets.sameAssetEarn)
+    expect(zoneRouterFactory(earn, outputs)).toBe(outputs.zoneRouterFactory)
+    expect(zoneRouterFactory(earn, { earnVault: outputs.earnVault })).toBe(releasedFactory)
+  })
+
+  test('deploys a Spend router only through the factory its spenders bind', () => {
     const card = parse(presets.card)
     expect(zoneRouterFactory(card, outputs)).toBe(outputs.zoneRouterFactory)
-    expect(zoneRouterFactory(card, { earnVault: outputs.earnVault })).toBe(releasedFactory)
+    expect(() => zoneRouterFactory(card, { earnVault: outputs.earnVault })).toThrow(
+      'The ZoneRouterFactory zoneRouter.spenders bind is unresolved; rerun once every spender answers ROUTER_FACTORY',
+    )
   })
 
   test('fails naming the release when the registry has no ZoneRouterFactory', () => {
     const mainnet = parseProfile(
-      { ...base, chainId: 4217, zoneRouter: presets.card },
+      { ...base, chainId: 4217, zoneRouter: presets.sameAssetEarn },
       { deployer: address('3'), factories: { earn: address('4'), erc4626Engine: address('1') } },
     )
     expect(() => zoneRouterFactory(mainnet, {})).toThrow(

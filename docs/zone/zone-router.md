@@ -81,6 +81,8 @@ like Earn's contracts, and records the factory as `zoneRouterFactory`:
    EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; units a
    token's transfer policy refuses, or an unverified spender's, are noted rather than sent, see
    [balance residues](../deployment/deployment.md#gas-residue-after-deployment)).
+   The lifecycle cannot authenticate a spender's implementation, so a router that lists spenders is
+   always handed to the pool owner and the Portal administrator, who check every spender first.
    Before any automatic pool admission or Portal role grant, read-only constructor simulations of the reviewed local
    factory and router builds must match the deployed runtime exactly, including their immutable
    values. A matching getter or address alone is insufficient; missing evidence stops the grant.

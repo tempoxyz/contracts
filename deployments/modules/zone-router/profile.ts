@@ -100,12 +100,19 @@ export function configuredZoneRouter(profile: ZoneRouterFields) {
 }
 
 /**
- * The factory the router deploys through: the recorded one, or for a router not deployed yet the
- * released `ZoneRouterFactory` from the registry, which a profile never creates.
+ * The factory the router deploys through: the recorded one, which discovery sets for a Spend router to
+ * the one its spenders bind, or for any other router not deployed yet the released
+ * `ZoneRouterFactory` from the registry, which a profile never creates.
  */
 export function zoneRouterFactory(profile: RouterProfile, outputs: Record<string, Address>) {
-  configuredZoneRouter(profile)
-  return outputs.zoneRouterFactory ?? releasedContract(profile.chainId, 'zoneRouterFactory')
+  const router = configuredZoneRouter(profile)
+  if (outputs.zoneRouterFactory) return outputs.zoneRouterFactory
+  // A Spend router through any other factory could never spend, so it never falls back.
+  if (router.spenders?.length)
+    throw new Error(
+      'The ZoneRouterFactory zoneRouter.spenders bind is unresolved; rerun once every spender answers ROUTER_FACTORY',
+    )
+  return releasedContract(profile.chainId, 'zoneRouterFactory')
 }
 
 /** The router's `ZoneRouter.Mode`, from which its constructor arguments and address derive. */

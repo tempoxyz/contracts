@@ -61,6 +61,13 @@ const hasZoneRouter = (profile: EarnDeploymentProfile) => profile.zoneRouter !==
 const sourceCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
   `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} and router ${requiredOutput(outputs, 'zoneRouter')} are source verified as src/zone/ZoneRouterFactory.sol and src/zone/ZoneRouter.sol (the lifecycle grants with its own keys only a router and factory of this checkout's build). `
 
+/**
+ * Whether the mode lists spenders. The lifecycle cannot authenticate a spender's implementation, so it
+ * grants a router that lists any only through a person, who checks every spender first.
+ */
+const listsSpenders = (profile: EarnDeploymentProfile) =>
+  Boolean(profile.zoneRouter?.spenders?.length)
+
 /** The router's conversion pool, when its Earn binding converts the private asset. */
 const routerPool = (profile: EarnDeploymentProfile) => profile.zoneRouter?.earn?.pool
 
@@ -192,20 +199,22 @@ export const authorizeZoneRouter = defineAuthorityStep({
     const router = requiredOutput(outputs, 'zoneRouter')
     return `${sourceCheck(profile, outputs)}Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, and verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
   },
-  signerAvailable: (_profile, environment, proven) =>
-    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
+  signerAvailable: (profile, environment, proven) =>
+    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven && !listsSpenders(profile),
   probeSigner: (options) => {
     const pool = routerPool(options.profile)
     return pool ? canAdministerPool(options, pool) : Promise.resolve(false)
   },
   execute: (options, dependencies) =>
-    admitPoolRouter(
-      options,
-      dependencies,
-      required(routerPool(options.profile), 'Zone router conversion pool'),
-      requiredOutput(options.outputs, 'zoneRouter'),
-      (client) => modeProvenanceMatches(client, options.profile, options.outputs),
-    ),
+    listsSpenders(options.profile)
+      ? Promise.resolve(undefined)
+      : admitPoolRouter(
+          options,
+          dependencies,
+          required(routerPool(options.profile), 'Zone router conversion pool'),
+          requiredOutput(options.outputs, 'zoneRouter'),
+          (client) => modeProvenanceMatches(client, options.profile, options.outputs),
+        ),
 })
 
 export const enableZoneRouterTokens = defineAuthorityStep({
@@ -283,11 +292,12 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const factory = zoneRouterFactory(profile, outputs)
     return `${sourceCheck(profile, outputs)}Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
-  signerAvailable: (_profile, environment, proven) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  signerAvailable: (profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven && !listsSpenders(profile),
   probeSigner: (options) =>
     canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   async execute(options, dependencies) {
+    if (listsSpenders(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
     const administrator = await zoneAdministrator(options, dependencies, portal)
     if (!administrator) return undefined
@@ -327,11 +337,12 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     const router = requiredOutput(outputs, 'zoneRouter')
     return `${sourceCheck(profile, outputs)}Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the callback-gateway role, call setGateway(${router}, false), and call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
   },
-  signerAvailable: (_profile, environment, proven) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  signerAvailable: (profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven && !listsSpenders(profile),
   probeSigner: (options) =>
     canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   async execute(options, dependencies) {
+    if (listsSpenders(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
     const administrator = await zoneAdministrator(options, dependencies, portal)
     if (!administrator) return undefined

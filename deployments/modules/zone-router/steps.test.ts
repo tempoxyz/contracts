@@ -97,6 +97,8 @@ const cardAndEarn = profileWith({
   spenders: [spender],
 })
 const card = profileWith({ zoneId: 7, ops: ['spend'], spenders: [spender] })
+/** An Earn-only router, which lists no spenders, so the lifecycle may grant it with its own keys. */
+const earnRouter = profileWith({ zoneId: 7, ops: ['deposit', 'redeem'], earn: earnBinding })
 
 const outputs = {
   asset: address('a55e7'),
@@ -189,27 +191,37 @@ describe('Zone router steps', () => {
   test('deploys the mode through the recorded factory, else the released one', () => {
     const step = deploymentStep('deploy-zone-router') as FoundryStep
     const { zoneRouterFactory: _factory, zoneRouter: _router, ...fresh } = outputs
-    for (const [recorded, factory] of [
-      [outputs, outputs.zoneRouterFactory],
-      [fresh, releasedFactory],
+    // A Spend router deploys through the recorded factory its spenders bind; one without spenders
+    // falls back to the released one.
+    for (const [profile, recorded, factory] of [
+      [card, outputs, outputs.zoneRouterFactory],
+      [earnRouter, outputs, outputs.zoneRouterFactory],
+      [earnRouter, fresh, releasedFactory],
     ] as const) {
       const input = decodeFunctionData({
         abi: deployZoneRouterScriptAbi,
-        data: step.input(card, recorded, '/tmp/out.json'),
+        data: step.input(profile, recorded, '/tmp/out.json'),
       })
       expect(input.args[0]).toEqual({
         expectedChainId: 42431n,
         factory,
-        mode: zoneRouterMode(card, recorded),
+        mode: zoneRouterMode(profile, recorded),
         outputPath: '/tmp/out.json',
       })
       // The released factory is admitted as an existing source-verified contract.
-      expect(step.creationEvent!(card, recorded)).toMatchObject({
+      expect(step.creationEvent!(profile, recorded)).toMatchObject({
         address: factory,
         output: 'zoneRouter',
         source: { contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory' },
       })
     }
+    // A Spend router never falls back to the released factory.
+    expect(() => step.input(card, fresh, '/tmp/out.json')).toThrow(
+      'The ZoneRouterFactory zoneRouter.spenders bind is unresolved',
+    )
+    expect(() => step.creationEvent!(card, fresh)).toThrow(
+      'The ZoneRouterFactory zoneRouter.spenders bind is unresolved',
+    )
     expect(step.intent).toEqual(['zoneRouter'])
     // A Spend router stays on its recorded factory, which its spenders bind; an Earn-only one is replaced.
     expect(step.source?.replaceOnCodeChange?.(card)).toBe(false)
@@ -336,13 +348,13 @@ describe('Zone router steps', () => {
     const creation = `0x${'d'.repeat(64)}` as const
     const getLogs = vi.fn(async () => [{ transactionHash: creation }])
     const client = {
-      ...chain(card, {}, releasedFactory),
+      ...chain(earnRouter, {}, releasedFactory),
       getBlockNumber: vi.fn(async () => 10n),
       getLogs,
     } as unknown as ChainClient
     // Neither the router nor the released factory it came from is recorded yet; adoption records both.
     const { zoneRouter: _, zoneRouterFactory: _factory, ...unrecorded } = outputs
-    expect(await step.adopt!(client, card, unrecorded)).toEqual({
+    expect(await step.adopt!(client, earnRouter, unrecorded)).toEqual({
       outputs: {
         ...unrecorded,
         zoneRouterFactory: releasedFactory,
@@ -356,8 +368,26 @@ describe('Zone router steps', () => {
     )
     // Nothing to adopt before the factory deployed the mode.
     expect(
-      await step.adopt!(chain(card, { isRouter: false }, releasedFactory), card, unrecorded),
+      await step.adopt!(
+        chain(earnRouter, { isRouter: false }, releasedFactory),
+        earnRouter,
+        unrecorded,
+      ),
     ).toBeUndefined()
+    // A Spend router adopts only through the factory discovery recorded from its spenders.
+    const { zoneRouter: _router, ...spendDiscovered } = outputs
+    const spendClient = {
+      ...chain(card),
+      getBlockNumber: vi.fn(async () => 10n),
+      getLogs: vi.fn(async () => [{ transactionHash: creation }]),
+    } as unknown as ChainClient
+    expect(await step.adopt!(spendClient, card, spendDiscovered)).toEqual({
+      outputs: { ...spendDiscovered, zoneRouter: outputs.zoneRouter },
+      transaction: creation,
+    })
+    await expect(step.adopt!(spendClient, card, unrecorded)).rejects.toThrow(
+      'The ZoneRouterFactory zoneRouter.spenders bind is unresolved',
+    )
   })
 
   test('hands gateway admission to the Zone administrator with the provenance to check', () => {
@@ -377,17 +407,65 @@ describe('Zone router steps', () => {
     )
   })
 
-  test('self-admits a router of any mode with the Zone admin key once authority is proven', () => {
+  test('self-admits a router without spenders with the Zone admin key once authority is proven', () => {
+    const sameAssetEarn = profileWith({
+      zoneId: 7,
+      ops: ['deposit'],
+      earn: { privateAsset: address('a') },
+    })
     for (const id of ['register-zone-router-gateway', 'admit-zone-router-account'] as const) {
       const step = deploymentStep(id)
       if (step.execution !== 'authority') throw new Error('expected an authority step')
       const environment = { ZONE_ADMIN_PRIVATE_KEY: authorityKey }
-      for (const profile of [card, cardAndEarn]) {
+      for (const profile of [earnRouter, sameAssetEarn]) {
         expect(step.signerAvailable!(profile, environment, true)).toBe(true)
         expect(step.signerAvailable!(profile, environment, false)).toBe(false)
         expect(step.signerAvailable!(profile, {}, true)).toBe(false)
       }
+      // A router that lists spenders is granted only by a person, who checks every spender first.
+      for (const profile of [card, cardAndEarn]) {
+        expect(step.signerAvailable!(profile, environment, true)).toBe(false)
+      }
     }
+  })
+
+  test.each([
+    { id: 'register-zone-router-gateway', profile: card },
+    { id: 'register-zone-router-gateway', profile: cardAndEarn },
+    { id: 'admit-zone-router-account', profile: card },
+    { id: 'admit-zone-router-account', profile: cardAndEarn },
+    { id: 'authorize-zone-router', profile: cardAndEarn },
+  ] as const)('$id hands a router that lists spenders to a person', async ({ id, profile }) => {
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
+      functionName === 'admin' || functionName === 'owner'
+        ? privateKeyToAccount(authorityKey).address
+        : false,
+    )
+    const sendTransactionSync = vi.fn()
+    const provenanceChecks = vi.mocked(requireRouterProvenance).mock.calls.length
+    await expect(
+      executeAvailableAuthority(
+        {
+          action: { id },
+          environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey, DEPLOYER_PRIVATE_KEY: authorityKey },
+          outputs,
+          profile,
+          rpcUrl: 'https://rpc.invalid',
+        },
+        {
+          authorityClient: ((_options: unknown, account: unknown) => ({
+            account,
+            chain: { id: 42431 },
+            getTransactionCount: async () => 0,
+            readContract,
+            sendTransactionSync,
+          })) as never,
+          fundFromFaucet: vi.fn() as never,
+        },
+      ),
+    ).resolves.toBeUndefined()
+    expect(vi.mocked(requireRouterProvenance).mock.calls).toHaveLength(provenanceChecks)
+    expect(sendTransactionSync).not.toHaveBeenCalled()
   })
 
   test.each([
@@ -408,7 +486,7 @@ describe('Zone router steps', () => {
         action: { id: 'register-zone-router-gateway' },
         environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
         outputs,
-        profile: cardAndEarn,
+        profile: earnRouter,
         rpcUrl: 'https://rpc.invalid',
       },
       {
@@ -463,7 +541,7 @@ describe('Zone router steps', () => {
           action: { id: 'register-zone-router-gateway' },
           environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
           outputs,
-          profile: cardAndEarn,
+          profile: earnRouter,
           rpcUrl: 'https://rpc.invalid',
         },
         runtime,
@@ -496,7 +574,7 @@ describe('Zone router steps', () => {
             action: { id },
             environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
             outputs,
-            profile: cardAndEarn,
+            profile: earnRouter,
             rpcUrl: 'https://rpc.invalid',
           },
           runtime,
@@ -510,8 +588,10 @@ describe('Zone router steps', () => {
     const step = deploymentStep('authorize-zone-router')
     if (step.execution !== 'authority') throw new Error('expected an authority step')
     const environment = { DEPLOYER_PRIVATE_KEY: `0x${'4'.repeat(64)}` }
-    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
-    expect(step.signerAvailable!(cardAndEarn, environment, false)).toBe(false)
+    expect(step.signerAvailable!(earnRouter, environment, true)).toBe(true)
+    expect(step.signerAvailable!(earnRouter, environment, false)).toBe(false)
+    // A router that lists spenders is admitted only by a person.
+    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(false)
     const handoff = step.handoff(cardAndEarn, outputs)
     expect(handoff).toContain(
       `Confirm ZoneRouterFactory ${zoneRouterFactory(cardAndEarn, outputs)}.isRouter(${outputs.zoneRouter}) and the mode in its RouterDeployed event, and verify the router's canonical implementation`,
@@ -551,7 +631,7 @@ describe('Zone router steps', () => {
         action: { id: 'admit-zone-router-account' },
         environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
         outputs,
-        profile: cardAndEarn,
+        profile: earnRouter,
         rpcUrl: 'https://rpc.invalid',
       },
       {
@@ -637,7 +717,7 @@ describe('Zone router steps', () => {
         action: { id: scenario.action as 'admit-zone-router-account' },
         environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
         outputs,
-        profile: cardAndEarn,
+        profile: earnRouter,
         rpcUrl: 'https://rpc.invalid',
       },
       {
@@ -685,7 +765,7 @@ describe('Zone router steps', () => {
         action: { id: 'authorize-zone-router' },
         environment: { DEPLOYER_PRIVATE_KEY: deployerKey },
         outputs,
-        profile: cardAndEarn,
+        profile: earnRouter,
         rpcUrl: 'https://rpc.invalid',
       },
       {
@@ -731,7 +811,7 @@ describe('Zone router steps', () => {
           action: { id: 'authorize-zone-router' },
           environment: { DEPLOYER_PRIVATE_KEY: deployerKey },
           outputs,
-          profile: cardAndEarn,
+          profile: earnRouter,
           rpcUrl: 'https://rpc.invalid',
         },
         {

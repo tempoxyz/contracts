@@ -718,9 +718,10 @@ build (apart from immutables and compiler metadata) through the release factory 
 `pnpm release` deploys first; a new router deploys only through this build's release factory, so
 deploy fails asking for `pnpm release` when the registry names another. A router with Spend stays on
 the factory its spenders bind, since they, such as the profile's own card program, take spends only
-from that factory's routers: it is not replaced for a new build, its admissions on a factory or router
-from an older build are handed to a person rather than granted with the lifecycle's keys, and a new
-mode needs spenders bound to this build's release factory. It does not revoke the old one: its pool allowlist entries and Portal
+from that factory's routers: it is not replaced for a new build, and a new mode needs spenders bound
+to this build's release factory. The lifecycle cannot authenticate a spender's implementation, so it
+never grants a router that lists spenders with its own keys: its pool and Portal admissions are
+handed to their owners, who check every spender first. It does not revoke the old one: its pool allowlist entries and Portal
 gateway stay until their owners remove them, since a router address can serve more than one
 profile. Once nothing uses the old router, the pool owner calls `setTakerAllowed(old, false)` and
 `setRecipientAllowed(old, false)` on the pool, and the Zone administrator calls
