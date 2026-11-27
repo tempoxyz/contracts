@@ -79,16 +79,19 @@ export const cardReleases = {
 
 /**
  * The card capability's lifecycle hooks: before any key is used, the network's released
- * `CardFactory` is in the registry and holds code, so no card contract is broadcast for a program the
- * deploy cannot finish.
+ * `CardFactory` and "TS" handler are in the registry and hold code, so no card contract is broadcast
+ * for a program the deploy cannot finish or hand off.
  */
 export const cardsModule: CapabilityModule = {
-  async preflight(client, profile) {
-    if (!profile.cards) return
+  async preflight(client, profile, outputs = {}) {
+    // A recorded program needs neither release again, so verify and deposit never depend on them.
+    if (!profile.cards || outputs.cardProgram) return
     const { cardFactory } = cardReleases.cardFactory(profile.chainId)
     const code = await client.getCode({ address: cardFactory })
     if (!code || code === '0x')
       throw new Error(`Released CardFactory ${cardFactory} has no code; run pnpm release first`)
+    // enable-card-program hands the program to Bridge through this handler.
+    await requireHandlerCode(client, cardReleases.tempoSpend(profile.chainId))
   },
 }
 

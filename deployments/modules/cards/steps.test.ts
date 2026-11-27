@@ -45,8 +45,11 @@ vi.mock(import('../../core/releases.js'), async (original) => {
     ...actual,
     releasedContract: vi.fn((chainId: number, key: SingletonReleaseKey) => {
       if (chainId === 42431) throw actual.missingRelease(chainId, key)
-      const released = chainId === 4217 ? registry[key] : undefined
-      return released ?? actual.releasedContract(chainId, key)
+      // Mainnet releases only what the test registry holds, whatever releases.ts records.
+      if (chainId !== 4217) return actual.releasedContract(chainId, key)
+      const released = registry[key]
+      if (!released) throw actual.missingRelease(chainId, key)
+      return released
     }),
   }
 })
@@ -143,7 +146,7 @@ describe('card program plan', () => {
 })
 
 describe('cards preflight', () => {
-  test('refuses a profile before any broadcast when the released CardFactory is missing', async () => {
+  test('refuses a profile before any broadcast when the released CardFactory or TS handler is missing', async () => {
     const getCode = vi.fn(async () => '0x' as const)
     await expect(cardsModule.preflight!({ getCode } as never, profile)).rejects.toThrow(
       `Released CardFactory ${outputs.cardFactory} has no code; run pnpm release first`,
@@ -157,6 +160,28 @@ describe('cards preflight', () => {
     await expect(
       cardsModule.preflight!({ getCode } as never, { ...profile, cards: null }),
     ).resolves.toBeUndefined()
+    // A CardFactory without a released handler stops too, before the provider and program deploy.
+    const factoryOnly = vi.fn(async ({ address }: { address: Address }) =>
+      address === outputs.cardFactory ? ('0x60' as const) : ('0x' as const),
+    )
+    await expect(
+      cardsModule.preflight!({ getCode: factoryOnly } as never, profile),
+    ).rejects.toThrow(
+      `Released "TS" handler ${handler} has no code; run pnpm release <network> first`,
+    )
+    // A recorded program is checked by verify, not by these releases.
+    await expect(
+      cardsModule.preflight!({ getCode } as never, profile, outputs),
+    ).resolves.toBeUndefined()
+    const withoutHandler = registry.tempoSpend
+    delete registry.tempoSpend
+    try {
+      await expect(
+        cardsModule.preflight!({ getCode: vi.fn(async () => '0x60') } as never, profile),
+      ).rejects.toThrow('No tempoSpend release on mainnet')
+    } finally {
+      registry.tempoSpend = withoutHandler
+    }
   })
 })
 
