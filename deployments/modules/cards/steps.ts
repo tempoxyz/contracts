@@ -83,8 +83,9 @@ export const cardReleases = {
  * for a program the deploy cannot finish or hand off.
  */
 export const cardsModule: CapabilityModule = {
-  async preflight(client, profile) {
-    if (!profile.cards) return
+  async preflight(client, profile, outputs = {}) {
+    // A recorded program needs neither release again, so verify and deposit never depend on them.
+    if (!profile.cards || outputs.cardProgram) return
     const { cardFactory } = cardReleases.cardFactory(profile.chainId)
     const code = await client.getCode({ address: cardFactory })
     if (!code || code === '0x')

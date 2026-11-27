@@ -169,6 +169,10 @@ describe('cards preflight', () => {
     ).rejects.toThrow(
       `Released "TS" handler ${handler} has no code; run pnpm release <network> first`,
     )
+    // A recorded program is checked by verify, not by these releases.
+    await expect(
+      cardsModule.preflight!({ getCode } as never, profile, outputs),
+    ).resolves.toBeUndefined()
     const withoutHandler = registry.tempoSpend
     delete registry.tempoSpend
     try {
