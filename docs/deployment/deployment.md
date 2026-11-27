@@ -734,7 +734,8 @@ A profile's card program ([`cards`](../../profiles/README.md#card-programs)) dep
 profile, against the release `CardFactory` and "TS" handler from the registry:
 `deploy-card-provider` creates its `BridgeProvider` at its release address and
 `deploy-card-program` its `CardSpender` through the release `CardFactory`, each reusing the contract
-when it exists, as Bridge's own scripts do. The record holds the release `ZoneRouterFactory`
+when it exists, as Bridge's own scripts do. Before any key is used, deploy refuses a program on a
+network whose registry lacks either release or whose release holds no code. The record holds the release `ZoneRouterFactory`
 (`cardRouterFactory`), the `CardFactory`, the provider and the program. Deploy source-verifies the
 provider, whose release address commits to its creation code and constructor arguments, so it needs
 no creation transaction, and the program against the `ProgramDeployed` event that created it, which a
