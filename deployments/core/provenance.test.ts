@@ -22,7 +22,6 @@ const record: EarnDeploymentRecord = {
     zone: null,
     targetYield: null,
     boostRewards: null,
-    zoneRouterFactory: null,
     zoneRouter: null,
     cards: null,
   },

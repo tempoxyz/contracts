@@ -3,7 +3,6 @@ pragma solidity ^0.8.36;
 
 import { console2 } from "forge-std/Script.sol";
 
-import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../../src/zone/ZoneRouterFactory.sol";
 import { SendSpender } from "../../../src/zone/spenders/SendSpender.sol";
 // Earn's own DeterministicRelease, reached through the existing `tempo-earn/` (earn/src/) remapping: a new
@@ -12,12 +11,12 @@ import { DeterministicRelease } from "../../DeterministicRelease.sol";
 import { IEarnVault } from "../../../src/interfaces/earn/IEarnVault.sol";
 import { IPropAMMVenue } from "../../../src/interfaces/external/propamm/IPropAMMVenue.sol";
 
-/// @notice Release entry points for the router project's ownerless contracts, which Zone Router Release
-///         deploys like Earn's shared factories (docs/deployment/deployment.md#zone-router-releases).
-///         The ZoneRouterFactory and each SendSpender are created through the CREATE2
-///         deployer with Earn's release salt (DeterministicRelease); a SendSpender binds the release factory
-///         unless told another, and a ZoneRouter is created by its factory, at the address its mode fixes. Each entry point reuses a contract that already exists, so whoever
-///         deploys the same release lands at the same address.
+/// @notice Release entry points for the router project's ownerless contracts, which `pnpm release` deploys
+///         with the other shared contracts (docs/deployment/deployment.md#releases). The ZoneRouterFactory
+///         and each SendSpender are created through the CREATE2 deployer with Earn's release salt
+///         (DeterministicRelease); a SendSpender binds the release factory unless told another. Each entry
+///         point reuses a contract that already exists, so whoever deploys the same release lands at the
+///         same address.
 contract DeployRouterReleaseScript is DeterministicRelease {
     error BindingFailed();
     error DeploymentVerificationFailed();
@@ -74,26 +73,6 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         console2.log("SEND_SPENDER_ADDRESS", address(spender));
     }
 
-    /// @notice The router `factory` deploys for `mode`, unless the factory already deployed it.
-    function zoneRouter(uint256 expectedChainId, ZoneRouterFactory factory, ZoneRouter.Mode calldata mode)
-        external
-        release(expectedChainId)
-        returns (ZoneRouter router)
-    {
-        if (address(factory).code.length == 0) revert NoFactory(address(factory));
-        // A spender authenticates routers through its own immutable factory, not their mode alone.
-        for (uint256 i; i < mode.spenders.length; ++i) {
-            if (SendSpender(mode.spenders[i]).ROUTER_FACTORY() != address(factory)) revert BindingFailed();
-        }
-        address predicted = factory.predict(mode);
-        if (!factory.isRouter(predicted)) factory.deploy(mode);
-        router = ZoneRouter(predicted);
-        if (!factory.isRouter(predicted)) revert DeploymentVerificationFailed();
-        _requireCode(predicted);
-        _verifyMode(router, mode);
-        console2.log("ZONE_ROUTER_ADDRESS", predicted);
-    }
-
     /// @dev The release ZoneRouterFactory, deployed unless it already exists.
     function _releaseFactory() private returns (ZoneRouterFactory factory) {
         address predicted = _releaseAddress(type(ZoneRouterFactory).creationCode);
@@ -102,15 +81,6 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         if (address(factory) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(factory));
         console2.log("ZONE_ROUTER_FACTORY_ADDRESS", address(factory));
-    }
-
-    function _verifyMode(ZoneRouter router, ZoneRouter.Mode calldata mode) private view {
-        if (
-            router.allowedZoneId() != mode.zoneId || router.enabledOps() != mode.enabledOps
-                || router.earnVault() != mode.earnVault || router.privateAsset() != mode.privateAsset
-                || address(router.pool()) != mode.pool || router.customerId() != mode.customerId
-                || keccak256(abi.encode(router.spenders())) != keccak256(abi.encode(mode.spenders))
-        ) revert BindingFailed();
     }
 
     function _requireCode(address deployed) private view {

@@ -189,7 +189,7 @@ defaults to the hosted network's public RPC unless `TEMPO_RPC_URL` is set.
 For an external or historical hosted profile without a reviewed identity in the registry, set
 `EARN_TRUSTED_DEPLOYMENT_IDENTITY` to an absolute path to its separately reviewed
 `{deployer, factories}` JSON file. This is the hosted equivalent of the lifecycle CLI
-[`--trusted-identity` input](deployment.md#shared-factory-releases); never derive trust from the
+[`--trusted-identity` input](deployment.md#releases); never derive trust from the
 deployment record itself. Package callers may instead pass `trustedIdentity` directly to
 `loadHostedProfileStack`, which takes precedence over the environment-selected file.
 

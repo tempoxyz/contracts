@@ -80,7 +80,7 @@ jobs:
     # The environment accepts only main and holds the deployer key the committed profiles share,
     # plus the optional third-party end-user key.
     environment: factory-release-${{ needs.network.outputs.network }}
-    # Shares the network's hosted-contracts queue with the deploy and release workflows, so the
+    # Shares the network's hosted-contracts queue with the Deploy workflow, so the
     # deployer key never sends from two CI jobs at once.
     concurrency:
       group: hosted-contracts-${{ needs.network.outputs.network }}

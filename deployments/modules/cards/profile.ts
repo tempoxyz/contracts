@@ -1,26 +1,17 @@
 import { concatHex, getContractAddress, keccak256, type Address, type Hex } from 'viem'
 
-import { hostedEnvironment, type HostedEnvironmentId } from '../../chain/tempo.js'
+import { hostedEnvironment } from '../../chain/tempo.js'
 import { address, exactKeys, isBytes32, literal, object } from '../../core/parse.js'
+import { bridgeSpenderFactories } from '../../core/releases.js'
 import { required, type ProfileSlice, type SliceProfile } from '../module.js'
-
-/**
- * Bridge's `SpenderFactory` on each hosted network: the one declaration of it, read by every profile's
- * card program on that network and by the card release, which deploys its "TS" handler. `null` until
- * a network has one; a profile there cannot declare a Bridge program.
- */
-export const bridgeSpenderFactories: Readonly<Record<HostedEnvironmentId, Address | null>> = {
-  moderato: null,
-  mainnet: null,
-}
 
 /** The card providers the deployment lifecycle deploys programs for. */
 export const cardProviders = ['bridge'] as const
 
 /**
- * One card program: a `CardSpender` and its provider contract, which the release `CardFactory`
- * creates at the address the provider and program ID fix. For Bridge, the program pays through
- * `spenderFactory`'s clone for `spenderId`; the factory is the network's declared one.
+ * One card program: its provider contract, at its release address, and a `CardSpender` the released
+ * `CardFactory` creates at the address the provider and program ID fix. For Bridge, the program pays
+ * through `spenderFactory`'s clone for `spenderId`; the factory is the network's declared one.
  */
 export type CardProgramIntent = {
   provider: (typeof cardProviders)[number]
@@ -34,9 +25,10 @@ export type CardFields = { cards: CardProgramIntent | null }
 type CardProfile = SliceProfile<CardFields>
 
 /**
- * The `cards` slice: one card program, its own intent component. The release `ZoneRouterFactory`
- * whose routers may call it, the release `CardFactory` and the program's provider contract are
- * deterministic release contracts the program step records beside it, identified by their address.
+ * The `cards` slice: one card program, its own intent component: the program's provider contract and
+ * its `CardSpender`. The released `ZoneRouterFactory` whose routers may call it and the released
+ * `CardFactory` that creates it come from the release registry; the program step records them beside
+ * it.
  */
 export const cardsProfile = {
   authoredKeys: ['cards'],
@@ -56,8 +48,8 @@ export const cardsProfile = {
     cards: (profile: CardProfile, deployment: string) =>
       profile.cards ? { deployment, routerFactory: 'release', ...profile.cards } : null,
   },
-  externalAddresses: { cardRouterFactory: 'cards', cardFactory: 'cards', cardProvider: 'cards' },
-  periphery: { cardProgram: 'cards' },
+  externalAddresses: { cardRouterFactory: 'cards', cardFactory: 'cards' },
+  periphery: { cardProvider: 'cards', cardProgram: 'cards' },
 } as const satisfies ProfileSlice<CardFields>
 
 /** The configured program, or a lifecycle error naming the module when the profile has none. */
@@ -87,7 +79,7 @@ export function parseCards(
     throw new Error(`${path}.spenderId must be a nonzero 32-byte hex string`)
   if (!spenderFactory)
     throw new Error(
-      `${path} needs a Bridge SpenderFactory, and none is declared for this network (bridgeSpenderFactories in deployments/modules/cards/profile.ts)`,
+      `${path} needs a Bridge SpenderFactory, and none is declared for this network (bridgeSpenderFactories in deployments/core/releases.ts)`,
     )
   return {
     provider,

@@ -47,7 +47,7 @@ For Earn application onboarding, use [SKILL.md](SKILL.md) and the
 - **The build is the deployment identity.** The compiler (`solar.lock`, `solar-releases.json`),
   `foundry.toml`'s remappings, source paths, and settings, and each contract's source path feed its
   metadata hash, and so its deterministic address and every reviewed release. Change them only on
-  purpose, with a fresh [shared factory release](docs/deployment/deployment.md#shared-factory-releases);
+  purpose, with a fresh [release](docs/deployment/deployment.md#releases);
   never move a released contract's source to tidy up. Compile only with a published solar release
   checked against `solar-releases.json`, never a branch build, and run `forge build --force` after
   any compiler change.

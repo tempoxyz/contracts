@@ -1,4 +1,5 @@
 import {
+  concatHex,
   encodeAbiParameters,
   encodeFunctionData,
   getAbiItem,
@@ -17,6 +18,8 @@ import {
   deployBridgeCardsScriptAbi,
 } from '../../abis/index.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
+import { releaseAddress } from '../../core/release.js'
+import { releasedContract } from '../../core/releases.js'
 import {
   defineAuthorityStep,
   defineFoundryStep,
@@ -26,8 +29,8 @@ import {
   type ChainClient,
   type StepAuthority,
 } from '../module.js'
+import { releaseCreationCode } from '../zone-router/releases.js'
 import { canonicalBridgeClone, configuredCards } from './profile.js'
-import { cardReleases } from './release.js'
 
 /** Bridge's role holders on its `SpenderFactory`; no key for either is ever configured here. */
 export const bridgeAuthority = {
@@ -43,30 +46,123 @@ const hasCards = (profile: EarnDeploymentProfile) => profile.cards !== null
 const cardOutputs = ['cardRouterFactory', 'cardFactory', 'cardProvider', 'cardProgram'] as const
 const programDeployed = getAbiItem({ abi: cardFactoryAbi, name: 'ProgramDeployed' })
 const maxLogBlockRange = 100_000n
+const cardsScript = 'script/spend/bridge/lifecycle/DeployBridgeCards.s.sol:DeployBridgeCardsScript'
+const bridgeProviderContract = 'src/spend/providers/bridge/BridgeProvider.sol:BridgeProvider'
+
+/** `BridgeProvider(factory, spenderId)`'s constructor arguments. */
+const bridgeProviderArgs = (spenderFactory: Address, spenderId: Hex) =>
+  encodeAbiParameters(parseAbiParameters('address, bytes32'), [spenderFactory, spenderId])
 
 /**
- * Deploys the profile's card program: its `BridgeProvider` at its release address and its `CardSpender`
- * through the release `CardFactory`, reusing either when it exists, as Bridge's own scripts do.
+ * The shared contracts a card program uses, which `pnpm release` deploys and profiles never create:
+ * the released `CardFactory` and the `ZoneRouterFactory` it binds, and the "TS" handler, all from the
+ * network's registry entry; and the address a program's own `BridgeProvider` is created at.
+ */
+export const cardReleases = {
+  cardFactory: (chainId: number) => ({
+    routerFactory: releasedContract(chainId, 'zoneRouterFactory'),
+    cardFactory: releasedContract(chainId, 'cardFactory'),
+  }),
+  tempoSpend: (chainId: number) => releasedContract(chainId, 'tempoSpend'),
+  /** A program's `BridgeProvider`, created at its release address like the release contracts. */
+  bridgeProvider(
+    spenderFactory: Address,
+    spenderId: Hex,
+    compile: (contract: string) => Hex = releaseCreationCode,
+  ) {
+    return releaseAddress(
+      concatHex([compile(bridgeProviderContract), bridgeProviderArgs(spenderFactory, spenderId)]),
+    )
+  },
+}
+
+/**
+ * Deploys the profile's `BridgeProvider` at its release address, reusing it when it exists, as Bridge's
+ * own scripts do. Its address commits to its creation code and constructor arguments, so it is
+ * source verified without a creation transaction.
+ */
+export const deployCardProvider = defineFoundryStep({
+  id: 'deploy-card-provider',
+  authority: deployerAuthority,
+  execution: 'foundry',
+  summary: "Deploy the card program's BridgeProvider at its release address.",
+  phase: 'deployment',
+  intent: ['cards'],
+  script: cardsScript,
+  enabled: hasCards,
+  input: (profile, _outputs, outputPath) => {
+    const { spenderFactory, spenderId } = configuredCards(profile)
+    return encodeFunctionData({
+      abi: deployBridgeCardsScriptAbi,
+      functionName: 'provider',
+      args: [{ expectedChainId: BigInt(profile.chainId), spenderFactory, spenderId, outputPath }],
+    })
+  },
+  source: {
+    output: 'cardProvider',
+    contract: bridgeProviderContract,
+    constructorArgs: (profile) => {
+      const { spenderFactory, spenderId } = configuredCards(profile)
+      return bridgeProviderArgs(spenderFactory, spenderId)
+    },
+    release: true,
+  },
+  async satisfied(client, profile, outputs) {
+    if (!(await deployedOutputs(client, outputs, ['cardProvider']))) return false
+    const { spenderFactory, spenderId } = configuredCards(profile)
+    const provider = requiredOutput(outputs, 'cardProvider')
+    // The release address is the provider's creation evidence, so a provider anywhere else is not it.
+    if (getAddress(provider) !== cardReleases.bridgeProvider(spenderFactory, spenderId))
+      return false
+    const bridge = { address: provider, abi: bridgeProviderAbi }
+    try {
+      const [factory, id, clone] = await Promise.all([
+        client.readContract({ ...bridge, functionName: 'FACTORY' }),
+        client.readContract({ ...bridge, functionName: 'SPENDER_ID' }),
+        client.readContract({ ...bridge, functionName: 'CLONE' }),
+      ])
+      return (
+        getAddress(factory) === getAddress(spenderFactory) &&
+        id.toLowerCase() === spenderId.toLowerCase() &&
+        getAddress(clone) === getAddress(canonicalBridgeClone(spenderFactory, spenderId))
+      )
+    } catch {
+      // A contract that does not answer as a provider is not this program's.
+      return false
+    }
+  },
+})
+
+/**
+ * Deploys the profile's card program: its `CardSpender` through the released `CardFactory`, over the
+ * program's `BridgeProvider`, reusing it when it exists, as Bridge's own scripts do.
  */
 export const deployCardProgram = defineFoundryStep({
   id: 'deploy-card-program',
   authority: deployerAuthority,
   execution: 'foundry',
-  summary:
-    "Deploy the card program's BridgeProvider and CardSpender through the release CardFactory.",
+  summary: "Deploy the card program's CardSpender through the released CardFactory.",
   phase: 'deployment',
   intent: ['cards'],
-  script: 'script/spend/bridge/lifecycle/DeployBridgeCards.s.sol:DeployBridgeCardsScript',
+  script: cardsScript,
   enabled: hasCards,
   input: (profile, _outputs, outputPath) => {
     const { spenderFactory, spenderId } = configuredCards(profile)
     return encodeFunctionData({
       abi: deployBridgeCardsScriptAbi,
       functionName: 'run',
-      args: [{ expectedChainId: BigInt(profile.chainId), spenderFactory, spenderId, outputPath }],
+      args: [
+        {
+          expectedChainId: BigInt(profile.chainId),
+          cardFactory: cardReleases.cardFactory(profile.chainId).cardFactory,
+          spenderFactory,
+          spenderId,
+          outputPath,
+        },
+      ],
     })
   },
-  // The release CardFactory source-verifies with the card release, before any program trusts its event.
+  // The released CardFactory source-verifies with its release, before any program trusts its event.
   creationEvent: (_profile, outputs) => ({
     address: requiredOutput(outputs, 'cardFactory'),
     event: programDeployed,
@@ -121,21 +217,21 @@ export const enableCardProgram = defineAuthorityStep({
   signerAvailable: () => false,
   satisfied: async (client, profile) => {
     const { spenderFactory, spenderId } = configuredCards(profile)
-    const handler = cardReleases.tempoSpend(spenderFactory)
+    const handler = cardReleases.tempoSpend(profile.chainId)
     await requireHandlerCode(client, handler)
     return cardProgramEnabled(client, { factory: spenderFactory, handler, spenderId })
   },
   handoff: (profile, outputs) =>
     cardProgramHandoff({
       ...configuredCards(profile),
-      handler: cardReleases.tempoSpend(configuredCards(profile).spenderFactory),
+      handler: cardReleases.tempoSpend(profile.chainId),
       program: requiredOutput(outputs, 'cardProgram'),
     }),
   execute: () => Promise.resolve(undefined),
 })
 
 /**
- * Whether the recorded program is the release `CardFactory`'s program for the profile's Bridge
+ * Whether the recorded program is the released `CardFactory`'s program for the profile's Bridge
  * program, paying through its clone and taking spends only from that factory's router factory.
  */
 export async function cardProgramBound(
@@ -192,7 +288,7 @@ export async function cardProgramBound(
 }
 
 /**
- * The program another deployer already created through the release `CardFactory`, such as Bridge
+ * The program another deployer already created through the released `CardFactory`, such as Bridge
  * with its own scripts, with the transaction its `ProgramDeployed` event names.
  */
 export async function adoptCardProgram(
@@ -205,10 +301,8 @@ export async function adoptCardProgram(
   const recorded = cardOutputs.every((key) => outputs[key])
   const { routerFactory, cardFactory } = recorded
     ? { routerFactory: outputs.cardRouterFactory!, cardFactory: outputs.cardFactory! }
-    : releases.cardFactory()
-  const provider = recorded
-    ? outputs.cardProvider!
-    : releases.bridgeProvider(spenderFactory, spenderId)
+    : releases.cardFactory(profile.chainId)
+  const provider = outputs.cardProvider ?? releases.bridgeProvider(spenderFactory, spenderId)
   const code = await client.getCode({ address: cardFactory })
   if (!code || code === '0x') return undefined
   const contract = { address: cardFactory, abi: cardFactoryAbi } as const
@@ -251,19 +345,21 @@ export async function adoptCardProgram(
 }
 
 /**
- * The program `deploy-card-program` creates or adopts for the profile, with the release
- * `ZoneRouterFactory` it takes spends from; `undefined` without a program or a release `CardFactory`.
+ * The program `deploy-card-program` creates or adopts for the profile, with the released
+ * `ZoneRouterFactory` it takes spends from; `undefined` without a program. A released `CardFactory`
+ * the network's registry lacks, or that has no code, fails: profiles never create it.
  */
 export async function profileCardProgram(
   client: Pick<ChainClient, 'getCode' | 'readContract'>,
-  profile: Pick<EarnDeploymentProfile, 'cards'>,
+  profile: Pick<EarnDeploymentProfile, 'cards' | 'chainId'>,
   releases: Pick<typeof cardReleases, 'cardFactory' | 'bridgeProvider'> = cardReleases,
 ) {
   if (!profile.cards) return undefined
   const { spenderFactory, spenderId } = profile.cards
-  const { routerFactory, cardFactory } = releases.cardFactory()
+  const { routerFactory, cardFactory } = releases.cardFactory(profile.chainId)
   const code = await client.getCode({ address: cardFactory })
-  if (!code || code === '0x') return undefined
+  if (!code || code === '0x')
+    throw new Error(`Released CardFactory ${cardFactory} has no code; run pnpm release first`)
   const program = await client.readContract({
     address: cardFactory,
     abi: cardFactoryAbi,
@@ -273,14 +369,12 @@ export async function profileCardProgram(
   return { program: getAddress(program), routerFactory: getAddress(routerFactory) }
 }
 
-/** Refuses a release "TS" handler with no code, which Bridge must never be handed. */
+/** Refuses a released "TS" handler with no code, which Bridge must never be handed. */
 export async function requireHandlerCode(client: Pick<ChainClient, 'getCode'>, handler: Address) {
   const code = await client.getCode({ address: handler })
   if (!code || code === '0x')
     throw new Error(
-      'Release "TS" handler ' +
-        handler +
-        ' has no code; run pnpm card-release <network> tempoSpend first',
+      `Released "TS" handler ${handler} has no code; run pnpm release <network> first`,
     )
 }
 

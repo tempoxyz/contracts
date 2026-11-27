@@ -75,11 +75,12 @@ The contracts convert nothing: a spend settles in the stablecoin that funds it.
 2. **Governance.** Calls `governorCall("UV", vault, allowed)` for each Earn vault the program can
    spend from. This also sets the clone's standing EarnShare approval to the vault. Disallowing
    clears it.
-3. **Tempo.** Deploys the `CardFactory` for the Zone's `ZoneRouterFactory` and the program's
-   `BridgeProvider` (`factory`, `spenderId`) at their release addresses, then
-   `CardFactory.deploy(spenderId, provider)`, from a deployment profile's
-   [`cards`](../../../profiles/README.md#card-programs) with
-   [Deploy](../../deployment/deployment.md#card-releases).
+3. **Tempo.** Releases the `CardFactory` for the Zone's `ZoneRouterFactory`
+   ([`pnpm release`](../../deployment/deployment.md#releases)), then deploys the program's
+   `BridgeProvider` (`factory`, `spenderId`) at its release address and
+   `CardFactory.deploy(spenderId, provider)` from a deployment profile's
+   [`cards`](../../../profiles/README.md#card-programs)
+   ([card programs](../../deployment/deployment.md#card-programs)).
 4. **Tempo.** Deploys the Zone's `ZoneRouter` through `ZoneRouterFactory`, with the program as its
    only spender.
 5. **Zone admin.** Gives the router its gateway role. Admits the program's `refundRecipient` and

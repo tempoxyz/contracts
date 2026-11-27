@@ -11,6 +11,7 @@ import {
   hasRuntimeCode,
   intentComponents,
   peripheryComponents,
+  retiredComponents,
   type DeploymentAddressKey,
   type IntentComponent,
 } from './components.js'
@@ -468,7 +469,7 @@ function parseContractVerifications(value: unknown, path: string): DeploymentSou
 
 function parseComponentIntentHashes(value: unknown, path: string) {
   const raw = object(value, path)
-  exactKeys(raw, path, ['core', 'engine'], peripheryComponents)
+  exactKeys(raw, path, ['core', 'engine'], [...peripheryComponents, ...retiredComponents])
   // A record written before a capability existed omits its component, which it never configured.
   const hashes = Object.fromEntries(intentComponents.map((key) => [key, raw[key] ?? null]))
   for (const key of intentComponents) {

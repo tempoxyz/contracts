@@ -23,6 +23,13 @@ const profile = parseEarnDeploymentProfile(
     chainId: 4217,
     owner: deployer,
     engine: { kind: 'veda', address },
+    targetYield: {
+      startTimestamp: 1_800_000_000,
+      endTimestamp: 1_800_086_400,
+      intervalSeconds: 300,
+      annualRate: { bps: 500 },
+      funding: [{ wallet: deployer, remainder: true }],
+    },
   },
   { deployer, factories: { earn: address, erc4626Engine: address } },
 )
@@ -104,12 +111,44 @@ describe('assertStepCreation', () => {
       fixture.cleanup()
     }
   })
+
+  test('admits a release contract on a hosted chain without a direct creation transaction', async () => {
+    const fixture = setup()
+    try {
+      const step = deploymentStep('deploy-card-provider')
+      if (step.execution !== 'foundry' || !step.source?.release)
+        throw new Error('Expected a release source')
+      const creationBytecode = vi.fn((): Hex => {
+        throw new Error('Unexpected compile')
+      })
+      // Its release address commits to its creation code, so whoever created it proves nothing.
+      for (const transactions of [[], [transaction], [transaction, transaction]])
+        await expect(
+          assertStepCreation(
+            { ...fixture.options, outputs: { cardProvider: address }, step, transactions },
+            { creationBytecode },
+          ),
+        ).resolves.toBeUndefined()
+      expect(creationBytecode).not.toHaveBeenCalled()
+      expect(fixture.client.getTransaction).not.toHaveBeenCalled()
+      expect(fixture.client.getTransactionReceipt).not.toHaveBeenCalled()
+      // The same evidence for a direct creation without a release is rejected.
+      await expect(
+        assertStepCreation({ ...fixture.options, transactions: [] }, { creationBytecode }),
+      ).rejects.toThrow(
+        'Missing or ambiguous creation transaction for deploy-contribution-controller',
+      )
+    } finally {
+      fixture.cleanup()
+    }
+  })
 })
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'creation-compiler-'))
-  const step = deploymentStep('deploy-zone-router-factory')
-  if (step.execution !== 'foundry' || !step.source) throw new Error('Expected direct source')
+  const step = deploymentStep('deploy-contribution-controller')
+  if (step.execution !== 'foundry' || !step.source || step.source.release || step.creationEvent)
+    throw new Error('Expected direct source')
   const client = {
     getTransactionReceipt: vi.fn(async () => ({
       transactionHash: transaction,
@@ -136,7 +175,7 @@ function setup() {
         FOUNDRY_SOLC: '/untrusted',
         DEPLOYER_PRIVATE_KEY: 'not-forwarded',
       },
-      outputs: { zoneRouterFactory: address },
+      outputs: { earnVault: deployer, earnContributionController: address },
       profile,
       step: { ...step, source: { ...step.source, constructorArgs: () => constructorArgs } },
       transactions: [transaction],

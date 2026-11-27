@@ -2,19 +2,13 @@ import {
   encodeFunctionData,
   getAbiItem,
   getAddress,
-  zeroAddress,
   type Address,
   type Hex,
   isAddressEqual,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import {
-  deployZoneRouterFactoryScriptAbi,
-  deployZoneRouterScriptAbi,
-  zonePortalAbi,
-  zoneRouterFactoryAbi,
-} from '../../abis/index.js'
+import { deployZoneRouterScriptAbi, zonePortalAbi, zoneRouterFactoryAbi } from '../../abis/index.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { InspectionMismatchError } from '../../chain/inspect.js'
 import { envPrivateKey } from '../../chain/runtime.js'
@@ -60,77 +54,27 @@ import {
 
 const hasZoneRouter = (profile: EarnDeploymentProfile) => profile.zoneRouter !== null
 
-/** Whether the profile names an existing ZoneRouterFactory rather than deploying its own. */
-const namesFactory = (profile: EarnDeploymentProfile) => profile.zoneRouter?.factory !== undefined
-
-/**
- * The check a person makes before admitting a router from a factory the profile names, which the
- * lifecycle trusts only for its own answers; empty for a factory the lifecycle deployed.
- */
-const namedFactoryCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
-  namesFactory(profile)
-    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as src/zone/ZoneRouterFactory.sol. `
-    : ''
-
 /** The router's conversion pool, when its Earn binding converts the private asset. */
 const routerPool = (profile: EarnDeploymentProfile) => profile.zoneRouter?.earn?.pool
 
-export const deployZoneRouterFactory = defineFoundryStep({
-  id: 'deploy-zone-router-factory',
-  authority: deployerAuthority,
-  execution: 'foundry',
-  summary: 'Deploy the ownerless ZoneRouterFactory the profile does not name.',
-  phase: 'deployment',
-  intent: ['zoneRouterFactory'],
-  script: 'script/zone/deploy/DeployZoneRouterFactory.s.sol:DeployZoneRouterFactoryScript',
-  enabled: (profile) => profile.zoneRouter !== null && profile.zoneRouter.factory === undefined,
-  input: (profile, _outputs, outputPath) =>
-    encodeFunctionData({
-      abi: deployZoneRouterFactoryScriptAbi,
-      functionName: 'run',
-      args: [{ expectedChainId: BigInt(profile.chainId), outputPath }],
-    }),
-  source: {
-    output: 'zoneRouterFactory',
-    contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
-    constructorArgs: () => '0x',
-    // Ownerless and immutable: a factory built from other code is replaced, not reused.
-    replaceOnCodeChange: () => true,
-  },
-  async satisfied(client, _profile, outputs) {
-    if (!(await deployedOutputs(client, outputs, ['zoneRouterFactory']))) return false
-    // Source verification identifies the contract; this only rejects an obviously different one.
-    return client
-      .readContract({
-        address: requiredOutput(outputs, 'zoneRouterFactory'),
-        abi: zoneRouterFactoryAbi,
-        functionName: 'isRouter',
-        args: [zeroAddress],
-      })
-      .then(
-        (deployed) => !deployed,
-        () => false,
-      )
-  },
-})
-
-/** Deploys the profile's mode through the factory, which returns an existing router for it. */
+/**
+ * Deploys the profile's mode through the released ZoneRouterFactory, which returns an existing router
+ * for it.
+ */
 export const deployZoneRouter = defineFoundryStep({
   id: 'deploy-zone-router',
   authority: deployerAuthority,
   execution: 'foundry',
-  summary: 'Deploy the ZoneRouter for the profile mode through its ZoneRouterFactory.',
+  summary: 'Deploy the ZoneRouter for the profile mode through the released ZoneRouterFactory.',
   phase: 'deployment',
-  // A new factory deploys the same mode at a new address.
-  intent: ['zoneRouterFactory', 'zoneRouter'],
+  intent: ['zoneRouter'],
+  // The released ZoneRouterFactory source-verifies with its release, before any router trusts its event.
   creationEvent: (profile, outputs) => ({
     address: zoneRouterFactory(profile, outputs),
     event: routerDeployed,
     argument: 'router',
     output: 'zoneRouter',
-    ...(namesFactory(profile)
-      ? { source: { contract: deployZoneRouterFactory.source!.contract } }
-      : {}),
+    source: { contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory' },
   }),
   script: 'script/zone/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
   rawGasEstimate: true,
@@ -155,8 +99,9 @@ export const deployZoneRouter = defineFoundryStep({
     accessMember: true,
     constructorArgs: (profile, outputs) =>
       zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
-    // A router from a factory the profile names carries that factory's code, not this checkout's.
-    replaceOnCodeChange: (profile) => !namesFactory(profile),
+    // Ownerless and immutable: a router built from other code is replaced through the released
+    // factory of this checkout's build.
+    replaceOnCodeChange: () => true,
   },
   async satisfied(client, profile, outputs) {
     if (!(await deployedOutputs(client, outputs, ['zoneRouter']))) return false
@@ -204,7 +149,11 @@ export async function adoptPredictedZoneRouter(
     })
     if (log) {
       return {
-        outputs: { ...outputs, zoneRouter: getAddress(router) },
+        outputs: {
+          ...outputs,
+          zoneRouterFactory: getAddress(factory),
+          zoneRouter: getAddress(router),
+        },
         transaction: log.transactionHash,
       }
     }
@@ -233,25 +182,22 @@ export const authorizeZoneRouter = defineAuthorityStep({
   },
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `${namedFactoryCheck(profile, outputs)}Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, and verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
+    return `Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, and verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
   },
-  // Like gateway admission, a router from a factory the profile names is admitted only by a person.
-  signerAvailable: (profile, environment, proven) =>
-    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven && !namesFactory(profile),
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => {
     const pool = routerPool(options.profile)
     return pool ? canAdministerPool(options, pool) : Promise.resolve(false)
   },
   execute: (options, dependencies) =>
-    namesFactory(options.profile)
-      ? Promise.resolve(undefined)
-      : admitPoolRouter(
-          options,
-          dependencies,
-          required(routerPool(options.profile), 'Zone router conversion pool'),
-          requiredOutput(options.outputs, 'zoneRouter'),
-          (client) => requireModeProvenance(client, options.profile, options.outputs),
-        ),
+    admitPoolRouter(
+      options,
+      dependencies,
+      required(routerPool(options.profile), 'Zone router conversion pool'),
+      requiredOutput(options.outputs, 'zoneRouter'),
+      (client) => requireModeProvenance(client, options.profile, options.outputs),
+    ),
 })
 
 export const enableZoneRouterTokens = defineAuthorityStep({
@@ -327,19 +273,13 @@ export const registerZoneRouterGateway = defineAuthorityStep({
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
     const factory = zoneRouterFactory(profile, outputs)
-    const provenance = profile.zoneRouter?.factory
-      ? `confirm that ZoneRouterFactory ${factory} is source verified as src/zone/ZoneRouterFactory.sol, then `
-      : ''
-    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
+    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
-  // A factory the profile names is trusted only for its own answers, so a router it made is admitted
-  // by a person who checked its verified source; the lifecycle admits only routers of its own factory.
-  signerAvailable: (profile, environment, proven) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven && !namesFactory(profile),
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) =>
     canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   async execute(options, dependencies) {
-    if (namesFactory(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
     const administrator = await zoneAdministrator(options, dependencies, portal)
     if (!administrator) return undefined
@@ -376,15 +316,13 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     ),
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should ${namedFactoryCheck(profile, outputs)}confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the callback-gateway role, call setGateway(${router}, false), and call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
+    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the callback-gateway role, call setGateway(${router}, false), and call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
   },
-  // As for gateway admission, a router from a factory the profile names is admitted only by a person.
-  signerAvailable: (profile, environment, proven) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven && !namesFactory(profile),
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) =>
     canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   async execute(options, dependencies) {
-    if (namesFactory(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
     const administrator = await zoneAdministrator(options, dependencies, portal)
     if (!administrator) return undefined

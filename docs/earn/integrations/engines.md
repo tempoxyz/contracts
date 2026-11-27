@@ -166,7 +166,7 @@ A kind whose engines the lifecycle provisions from a venue also adds:
   [`releases.ts`](../../../deployments/core/releases.ts) (`mainnet` and `moderato`), with the
   reviewed factory address or `null` until it is released there. The entry is typed
   `Record<EngineFactoryKey, Address | null>`, so type checking fails until every network has the
-  key ([shared factory releases](../../deployment/deployment.md#shared-factory-releases)).
+  key ([releases](../../deployment/deployment.md#releases)).
 
 ### Definition fields
 

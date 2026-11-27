@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from 'vitest'
 import { parseEarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
 import {
   TransactionReceiptNotFoundError,
+  decodeFunctionData,
   getAddress,
   keccak256,
   zeroAddress,
@@ -17,6 +18,7 @@ import {
 } from 'viem'
 import { Addresses } from 'viem/tempo'
 
+import { deployZoneRouterScriptAbi } from '../abis/index.js'
 import { foundryProcessEnvironment } from '../chain/foundry.js'
 import {
   foundryOutputPath,
@@ -68,6 +70,20 @@ vi.mock(import('../chain/runtime.js'), async (original) => ({
   ...(await original()),
   rpcClient: () => chain as never,
 }))
+// Profiles bind to the released ZoneRouterFactory; the registry records none yet, so release one here.
+const releasedZoneRouterFactory = vi.hoisted(
+  () => '0x00000000000000000000000000000000000000fa' as const,
+)
+vi.mock(import('./releases.js'), async (original) => {
+  const actual = await original()
+  return {
+    ...actual,
+    releasedContract: (chainId: number, key: Parameters<typeof actual.releasedContract>[1]) =>
+      chainId === 4217 && key === 'zoneRouterFactory'
+        ? releasedZoneRouterFactory
+        : actual.releasedContract(chainId, key),
+  }
+})
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const engineFactory = address('5')
@@ -375,7 +391,6 @@ describe('Earn deployment lifecycle', () => {
           zoneId: 7,
           ops: ['spend'],
           spenders: [address('5e')],
-          factory: address('fa'),
         },
       },
       { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
@@ -730,7 +745,6 @@ describe('Earn deployment lifecycle', () => {
           zoneId: 7,
           ops: ['spend'],
           spenders: [address('5e')],
-          factory: address('fa'),
         },
       },
       { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
@@ -753,6 +767,9 @@ describe('Earn deployment lifecycle', () => {
         'script/zone/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
       ])
       expect(step.outputPath.startsWith(checkout)).toBe(true)
+      // The router is created through the released factory, never one the profile deploys.
+      const { args } = decodeFunctionData({ abi: deployZoneRouterScriptAbi, data: step.calldata })
+      expect(args[0].factory).toBe(releasedZoneRouterFactory)
     } finally {
       rmSync(checkout, { recursive: true, force: true })
     }
@@ -826,7 +843,6 @@ describe('Earn deployment lifecycle', () => {
           zoneId: 7,
           ops: ['spend'],
           spenders: [address('5e')],
-          factory: address('fa'),
         },
       },
       { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
@@ -905,7 +921,7 @@ describe('Earn deployment lifecycle', () => {
 
 describe('broadcast receipt recovery', () => {
   test('pinned shared release hashes do not admit a direct creation from a different checkout', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       syncFoundryOutputs(fixture.options.root, fixture.options.profilePath)
       const pinned = sharedFactoryRuntimeCodeHashes(() => ({
@@ -921,14 +937,14 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
-        contractAddress: fixture.factory,
+        contractAddress: fixture.controller,
         logs: [],
       })
       const transaction = {
         hash: fixture.hash,
         from: fixture.options.profile.deployer,
         to: null,
-        input: '0x6001600055',
+        input: fixture.creationInput('0x6001600055'),
       }
       chain.getTransaction.mockResolvedValue(transaction)
       await expect(
@@ -954,19 +970,19 @@ describe('broadcast receipt recovery', () => {
   test.each(['recovery', 'post-Forge'])(
     'rejects custom initcode before caching during %s and permits a corrected retry',
     async (path) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       try {
         chain.getTransactionReceipt.mockResolvedValue({
           transactionHash: fixture.hash,
           status: 'success',
-          contractAddress: fixture.factory,
+          contractAddress: fixture.controller,
           logs: [],
         })
         const transaction = {
           hash: fixture.hash,
           from: fixture.options.profile.deployer,
           to: null,
-          input: '0x60006000f3',
+          input: fixture.creationInput('0x60006000f3'),
         }
         chain.getTransaction.mockResolvedValue(transaction)
         const dependencies = { creationBytecode: () => '0x6001600055' as const }
@@ -980,11 +996,11 @@ describe('broadcast receipt recovery', () => {
         expect(loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)).toEqual(
           before,
         )
-        transaction.input = '0x6001600055'
+        transaction.input = fixture.creationInput('0x6001600055')
         await run()
         const after = loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)
         expect(after.actions[fixture.deploy.action.id]?.transactions).toEqual([fixture.hash])
-        expect(after.outputs.zoneRouterFactory).toBe(fixture.factory)
+        expect(after.outputs.earnContributionController).toBe(fixture.controller)
       } finally {
         fixture.cleanup()
       }
@@ -997,7 +1013,7 @@ describe('broadcast receipt recovery', () => {
     ['unrelated saved receipt', [{ transactionHash: `0x${'cd'.repeat(32)}`, status: '0x1' }]],
     ['unsuccessful saved receipt', [{ transactionHash: `0x${'ab'.repeat(32)}`, status: '0x0' }]],
   ])('confirms an interrupted creation with %s from the RPC', async (_label, receipts) => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       writeFileSync(
         fixture.broadcast,
@@ -1006,12 +1022,12 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: `0x${fixture.hash.slice(2).toUpperCase()}`,
         status: 'success',
-        contractAddress: fixture.factory,
+        contractAddress: fixture.controller,
         logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options, fixture.dependencies)
       expect(resumed.kind).toBe('complete')
-      expect(resumed.pending.outputs.zoneRouterFactory).toBe(fixture.factory)
+      expect(resumed.pending.outputs.earnContributionController).toBe(fixture.controller)
       expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
         fixture.hash,
       ])
@@ -1025,12 +1041,12 @@ describe('broadcast receipt recovery', () => {
   })
 
   test('confirms a creation when the normal post-Forge recorder has no saved receipt', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
-        contractAddress: fixture.factory,
+        contractAddress: fixture.controller,
         logs: [],
       })
       const recorded = await recordFoundryAction(
@@ -1049,7 +1065,7 @@ describe('broadcast receipt recovery', () => {
   })
 
   test('recovers receipts when outputs were saved before the action was recorded', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       const { root, profilePath, profile } = fixture.options
       syncFoundryOutputs(root, profilePath)
@@ -1062,7 +1078,7 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
-        contractAddress: fixture.factory,
+        contractAddress: fixture.controller,
         logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options, fixture.dependencies)
@@ -1077,7 +1093,7 @@ describe('broadcast receipt recovery', () => {
   })
 
   test('repairs an earlier chain-only completion without rebroadcasting', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
@@ -1098,7 +1114,7 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
-        contractAddress: fixture.factory,
+        contractAddress: fixture.controller,
         logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options, fixture.dependencies)
@@ -1247,7 +1263,7 @@ describe('broadcast receipt recovery', () => {
   test.each(['unrecorded', 'cached empty'])(
     'rejects a stale selector receipt without poisoning a corrected direct creation retry (%s)',
     async (state) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       try {
         if (state === 'cached empty') {
           chain.getTransactionReceipt.mockResolvedValue({
@@ -1286,7 +1302,7 @@ describe('broadcast receipt recovery', () => {
         chain.getTransactionReceipt.mockResolvedValue({
           transactionHash: fixture.hash,
           status: 'success',
-          contractAddress: fixture.factory,
+          contractAddress: fixture.controller,
           logs: [],
         })
         const result = await prepareLifecycleStep(fixture.options, fixture.dependencies)
@@ -1306,7 +1322,7 @@ describe('broadcast receipt recovery', () => {
   test.each(['reverted', 'missing', 'transport failure'])(
     'does not trust a saved successful creation receipt during %s',
     async (failure) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       try {
         writeFileSync(
           fixture.broadcast,
@@ -1319,7 +1335,7 @@ describe('broadcast receipt recovery', () => {
           chain.getTransactionReceipt.mockResolvedValue({
             transactionHash: fixture.hash,
             status: 'reverted',
-            contractAddress: fixture.factory,
+            contractAddress: fixture.controller,
             logs: [],
           })
         else
@@ -1335,7 +1351,7 @@ describe('broadcast receipt recovery', () => {
         )
         const pending = loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)
         expect(pending.actions[fixture.deploy.action.id]).toBeUndefined()
-        expect(pending.latestOutputs).toEqual({ zoneRouterFactory: fixture.factory })
+        expect(pending.latestOutputs).toEqual({ earnContributionController: fixture.controller })
         const error = await prepareLifecycleStep(fixture.options, fixture.dependencies).catch(
           (error: Error) => error,
         )
@@ -1347,7 +1363,7 @@ describe('broadcast receipt recovery', () => {
   )
 
   test('validates a successful saved receipt against its direct creation target', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       writeFileSync(
         fixture.broadcast,
@@ -1359,7 +1375,7 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
-        contractAddress: fixture.factory,
+        contractAddress: fixture.controller,
         logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options, fixture.dependencies)
@@ -1375,7 +1391,7 @@ describe('broadcast receipt recovery', () => {
   test.each(['reverted', 'unknown', '0x1'])(
     'does not fabricate successful transactions from RPC status %s',
     async (status) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       try {
         chain.getTransactionReceipt.mockResolvedValue({ transactionHash: fixture.hash, status })
         const resumed = await prepareLifecycleStep(fixture.options, fixture.dependencies)
@@ -1391,7 +1407,7 @@ describe('broadcast receipt recovery', () => {
   )
 
   test('preserves local batched script receipts without requiring hosted creation evidence', async () => {
-    const fixture = await interruptedFactoryBroadcast(1337)
+    const fixture = await interruptedCreationBroadcast(1337)
     const earlier: Hex = `0x${'cd'.repeat(32)}`
     try {
       writeFileSync(
@@ -1416,7 +1432,7 @@ describe('broadcast receipt recovery', () => {
   })
 
   test('checks each unsaved receipt but rejects ambiguous successful creation hashes', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     const saved: Hex = `0x${'cd'.repeat(32)}`
     const reverted: Hex = `0x${'ef'.repeat(32)}`
     try {
@@ -1449,7 +1465,7 @@ describe('broadcast receipt recovery', () => {
     ['before', 'saved'],
     ['after', 'saved'],
   ])('recovers a mined replacement %s a dropped hash with a %s receipt', async (order, receipt) => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     const dropped: Hex = `0x${'dd'.repeat(32)}`
     try {
       const hashes = order === 'before' ? [fixture.hash, dropped] : [dropped, fixture.hash]
@@ -1465,7 +1481,7 @@ describe('broadcast receipt recovery', () => {
         return {
           transactionHash: hash,
           status: 'success',
-          contractAddress: fixture.factory,
+          contractAddress: fixture.controller,
           logs: [],
         }
       })
@@ -1484,7 +1500,7 @@ describe('broadcast receipt recovery', () => {
   test.each(['unrecorded', 'cached empty'])(
     'keeps a %s creation retryable when every broadcast hash is missing',
     async (state) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       try {
         if (state === 'cached empty') {
           chain.getTransactionReceipt.mockResolvedValue({
@@ -1514,7 +1530,7 @@ describe('broadcast receipt recovery', () => {
   )
 
   test('does not mistake a transport failure for a dropped transaction', async () => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     const failed: Hex = `0x${'dd'.repeat(32)}`
     try {
       writeFileSync(
@@ -1541,7 +1557,7 @@ describe('broadcast receipt recovery', () => {
   test.each(['already satisfied', 'recovered outputs'])(
     'does not require stale receipts for a non-creating step with %s',
     async (state) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       const step = deploymentStep('validate-access')
       if (step.execution !== 'foundry') throw new Error('expected a Foundry step')
       const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(true)
@@ -1585,7 +1601,7 @@ describe('broadcast receipt recovery', () => {
     ['missing hashes', { transactions: [{}] }],
     ['malformed hashes', { transactions: [{ hash: '0x1234' }, { hash: 1234 }] }],
   ])('does not infer a transaction from onchain state with %s', async (_label, broadcast) => {
-    const fixture = await interruptedFactoryBroadcast()
+    const fixture = await interruptedCreationBroadcast()
     try {
       if (broadcast) writeFileSync(fixture.broadcast, JSON.stringify(broadcast))
       else rmSync(fixture.broadcast)
@@ -1600,13 +1616,13 @@ describe('broadcast receipt recovery', () => {
   test.each(['mismatched hash', 'receipt unavailable', 'credentialed RPC error'])(
     'preserves an interrupted action for retry after %s',
     async (failure) => {
-      const fixture = await interruptedFactoryBroadcast()
+      const fixture = await interruptedCreationBroadcast()
       try {
         if (failure === 'mismatched hash')
           chain.getTransactionReceipt.mockResolvedValue({
             transactionHash: `0x${'cd'.repeat(32)}`,
             status: 'success',
-            contractAddress: fixture.factory,
+            contractAddress: fixture.controller,
             logs: [],
           })
         else
@@ -1633,12 +1649,12 @@ describe('broadcast receipt recovery', () => {
         }
         const pending = loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)
         expect(pending.actions[fixture.deploy.action.id]).toBeUndefined()
-        expect(pending.outputs).toEqual({})
-        expect(pending.latestOutputs).toEqual({ zoneRouterFactory: fixture.factory })
+        expect(pending.outputs).toEqual(fixture.seeded)
+        expect(pending.latestOutputs).toEqual({ earnContributionController: fixture.controller })
         chain.getTransactionReceipt.mockResolvedValue({
           transactionHash: fixture.hash,
           status: 'success',
-          contractAddress: fixture.factory,
+          contractAddress: fixture.controller,
           logs: [],
         })
         const resumed = await prepareLifecycleStep(fixture.options, fixture.dependencies)
@@ -1652,15 +1668,25 @@ describe('broadcast receipt recovery', () => {
   )
 })
 
-async function interruptedFactoryBroadcast(chainId = 4217) {
+/**
+ * An interrupted direct-creation broadcast: Forge wrote the contribution controller's output and its
+ * broadcast artifact, but the run stopped before the action was recorded.
+ */
+async function interruptedCreationBroadcast(chainId = 4217) {
   const profile = parseEarnDeploymentProfile(
     {
       version: 1,
-      id: 'interrupted-factory',
+      id: 'interrupted-creation',
       chainId,
       owner: address('4'),
       engine: { kind: 'veda', address: address('1') },
-      zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')] },
+      targetYield: {
+        startTimestamp: 1_800_000_000,
+        endTimestamp: 1_800_086_400,
+        intervalSeconds: 300,
+        annualRate: { bps: 500 },
+        funding: [{ wallet: address('f'), remainder: true }],
+      },
     },
     {
       allowEphemeralChain: true,
@@ -1677,42 +1703,70 @@ async function interruptedFactoryBroadcast(chainId = 4217) {
       profile,
       rpcUrl: 'http://chain.test',
       environment: {},
-      actions: planEarnDeployment(profile).filter(({ id }) => id === 'deploy-zone-router-factory'),
+      actions: planEarnDeployment(profile).filter(
+        ({ id }) => id === 'deploy-contribution-controller',
+      ),
     }
-    chain.getCode.mockResolvedValue('0x')
-    chain.readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
-      if (functionName === 'isRouter') return false
-      throw new Error(`Unexpected contract read ${functionName}`)
+    // The core outputs the controller binds to were recorded by earlier steps.
+    const seeded = { earnVault: address('11'), asset: address('16') }
+    savePendingDeployment(options.profilePath, profile, {
+      ...loadPendingDeployment(options.profilePath, profile),
+      outputs: seeded,
     })
+    const controller = address('f1')
+    chain.getCode.mockResolvedValue('0x')
+    chain.readContract.mockImplementation(
+      async ({ address: target, functionName }: { address: string; functionName: string }) => {
+        if (target !== controller) throw new Error(`Unexpected contract read ${functionName}`)
+        const state = { earnVault: seeded.earnVault, owner: profile.owner, asset: seeded.asset }
+        if (!(functionName in state)) throw new Error(`Unexpected contract read ${functionName}`)
+        return state[functionName as keyof typeof state]
+      },
+    )
     chain.getTransactionReceipt
       .mockReset()
       .mockRejectedValue(new Error('Unexpected receipt request'))
     const deploy = await prepareLifecycleStep(options)
     if (deploy.kind !== 'foundry') throw new Error(`planned ${deploy.kind}`)
-    const factory = address('f1')
     const written = JSON.parse(readFileSync(deploy.outputPath, 'utf8'))
     writeFileSync(
       deploy.outputPath,
-      JSON.stringify({ ...written, latestOutputs: { zoneRouterFactory: factory } }),
+      JSON.stringify({ ...written, latestOutputs: { earnContributionController: controller } }),
     )
     const directory = join(
       foundryBroadcastPath(options.root, options.profilePath),
-      'DeployZoneRouterFactory.s.sol',
+      'DeployEarnContributionController.s.sol',
       String(profile.chainId),
     )
     mkdirSync(directory, { recursive: true })
     const broadcast = join(directory, `${deploy.calldata.slice(2, 10)}-latest.json`)
     const hash: Hex = `0x${'ab'.repeat(32)}`
     writeFileSync(broadcast, JSON.stringify({ transactions: [{ hash }] }))
+    const creationBytecode = '0x6001600055' as const
+    const step = deploymentStep('deploy-contribution-controller')
+    if (step.execution !== 'foundry' || !step.source) throw new Error('Expected direct source')
+    // The mined creation input is the compiled creation code followed by the constructor arguments.
+    const constructorArgs = step.source.constructorArgs(profile, seeded)
+    const creationInput = (bytecode: Hex): Hex => `${bytecode}${constructorArgs.slice(2)}`
     chain.getTransaction.mockReset().mockResolvedValue({
       hash,
       from: profile.deployer,
       to: null,
-      input: '0x6001600055',
+      input: creationInput(creationBytecode),
     })
-    const dependencies = { creationBytecode: () => '0x6001600055' as const }
+    const dependencies = { creationBytecode: () => creationBytecode }
     chain.getCode.mockResolvedValue('0x60')
-    return { broadcast, cleanup, deploy, factory, hash, options, dependencies }
+    return {
+      broadcast,
+      cleanup,
+      controller,
+      creationInput,
+      deploy,
+      dependencies,
+      hash,
+      options,
+      seeded,
+    }
   } catch (error) {
     cleanup()
     throw error

@@ -1,10 +1,11 @@
 name: Deploy
 
-# Deploys the whole hosted stack from main, one network at a time: the shared factory releases, the
-# ZoneRouterFactory, the card releases, then every committed profile on that network. Every step reconciles toward
-# what main describes and reuses what is already deployed, so rerunning it after a success changes
-# nothing and rerunning it after a failure resumes. A broadcast run then pushes a branch, and opens
-# its pull request, with any release registry entry or profile record it changed.
+# Deploys the whole hosted stack from main, one network at a time: the releases (every shared
+# contract, `pnpm release`), then every committed profile on that network (`pnpm earn deploy`), which
+# reads the shared contracts from the registry. Every step reconciles toward what main describes and
+# reuses what is already deployed, so rerunning it after a success changes nothing and rerunning it
+# after a failure resumes. A broadcast run then pushes a branch, and opens its pull request, with any
+# release registry entry or profile record it changed.
 on:
   workflow_dispatch:
     inputs:
@@ -43,7 +44,7 @@ jobs:
     # Dispatching from main is the approval: the environment has no required reviewer, accepts only
     # main, and holds the deployer key that the releases and the committed profiles share.
     environment: factory-release-${{ matrix.network }}
-    # Shares the network's hosted-contracts queue with the release workflows, so the deployer key
+    # Shares the network's hosted-contracts queue with the other hosted-contracts jobs, so the deployer key
     # never sends from two CI jobs at once. Do not broadcast with the deployer key locally meanwhile.
     concurrency:
       group: hosted-contracts-${{ matrix.network }}
@@ -57,7 +58,7 @@ jobs:
       BROADCAST: ${{ inputs.broadcast }}
       # Only with broadcast: the commands refuse it otherwise.
       RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}
-    # The keys and RPC credentials reach only the four deploy steps, and this job restores no
+    # The keys and RPC credentials reach only the two deploy steps, and this job restores no
     # dependency or build cache, so nothing another job wrote runs beside them.
     steps:
       - name: Secure runner
@@ -73,7 +74,10 @@ jobs:
           workspace: '@tempoxyz/contracts'
           caches: 'false'
 
-      - name: Deploy the factory releases
+      # Every shared contract, at its release address: Earn's factories, the ZoneRouterFactory and
+      # SendSpender, and, on a network that declares Bridge's SpenderFactory
+      # (deployments/core/releases.ts), the CardFactory and Bridge's "TS" handler.
+      - name: Deploy the releases
         env:
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
@@ -81,42 +85,14 @@ jobs:
           TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
-          arguments=("$NETWORK" all --output "$RUNNER_TEMP/factory-release.json")
+          arguments=("$NETWORK" --output "$RUNNER_TEMP/release.json")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
           if [[ "$RESUBMIT" == 'true' ]]; then arguments+=(--resubmit-verification); fi
-          pnpm factory-release "${arguments[@]}"
-          # The profiles below deploy against this checkout's registry, so record verified releases first.
+          pnpm release "${arguments[@]}"
+          # The profiles below read the shared contracts from this checkout's registry, so record verified releases first.
           if [[ "$BROADCAST" == 'true' ]]; then
-            pnpm factory-release registry "$RUNNER_TEMP/factory-release.json" --body "$RUNNER_TEMP/registry-pr.md"
+            pnpm release registry "$RUNNER_TEMP/release.json" --body "$RUNNER_TEMP/registry-pr.md"
           fi
-
-      - name: Deploy the ZoneRouterFactory
-        env:
-          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
-          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
-          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
-        run: |
-          set -euo pipefail
-          arguments=("$NETWORK" zoneRouterFactory --parameters '{}' --output "$RUNNER_TEMP/zone-router-release.json")
-          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
-          if [[ "$RESUBMIT" == 'true' ]]; then arguments+=(--resubmit-verification); fi
-          pnpm zone-router-release "${arguments[@]}"
-
-      # The CardFactory and Bridge's "TS" handler, on a network that declares Bridge's SpenderFactory
-      # (deployments/modules/cards/profile.ts); elsewhere nothing. Profiles' card programs trust both.
-      - name: Deploy the card releases
-        env:
-          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
-          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
-          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
-        run: |
-          set -euo pipefail
-          arguments=("$NETWORK" all --output "$RUNNER_TEMP/card-release.json")
-          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
-          if [[ "$RESUBMIT" == 'true' ]]; then arguments+=(--resubmit-verification); fi
-          pnpm card-release "${arguments[@]}"
 
       - name: List the network's profiles
         id: profiles
@@ -212,13 +188,12 @@ jobs:
         run: |
           {
             echo "## Stack on ${NETWORK} · $([[ "$BROADCAST" == 'true' ]] && echo broadcast || echo dry run) · ${GITHUB_SHA::7}"
-            for result in "$RUNNER_TEMP/factory-release.json" "$RUNNER_TEMP/zone-router-release.json" "$RUNNER_TEMP/card-release.json"; do
-              [[ -f "$result" ]] || continue
+            if [[ -f "$RUNNER_TEMP/release.json" ]]; then
               echo
               echo '| Release | Contract | Address | Transaction | Source match |'
               echo '| --- | --- | --- | --- | --- |'
-              jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" else "already deployed" end) | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
-            done
+              jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" else "already deployed" end) | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$RUNNER_TEMP/release.json"
+            fi
             if [[ -f "$RUNNER_TEMP/profiles.md" ]]; then
               echo
               echo '| Profile | State |'
@@ -233,9 +208,7 @@ jobs:
           # One artifact per attempt, so a rerun that gets less far keeps what an earlier attempt verified.
           name: deploy-${{ matrix.network }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/factory-release.json
-            ${{ runner.temp }}/zone-router-release.json
-            ${{ runner.temp }}/card-release.json
+            ${{ runner.temp }}/release.json
             ${{ runner.temp }}/changes/
           if-no-files-found: ignore
 

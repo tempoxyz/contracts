@@ -13,7 +13,7 @@ import { zoneFactoryAddress, zoneMessengerAddress } from '../../../chain/zone.js
 import { parseEarnDeploymentProfile } from '../../../core/profile.js'
 import { presentEarnDeploymentPlan } from '../../../core/plan.js'
 import { zoneRouterModeProfile } from '../../zone-router/profile.js'
-import { deployZoneRouter, deployZoneRouterFactory } from '../../zone-router/steps.js'
+import { deployZoneRouter } from '../../zone-router/steps.js'
 import { zoneRouterProfile } from './profile.js'
 import {
   canAdministerZone,
@@ -309,12 +309,7 @@ describe('router code identity', () => {
       routerContractRelease: 2,
     })
     expect(deployRouter.source?.replaceOnCodeChange?.(profile)).toBe(true)
-    expect(deployZoneRouterFactory.source?.replaceOnCodeChange?.(profile)).toBe(true)
+    // Every router comes from the released factory, so one built from other code is always replaced.
     expect(deployZoneRouter.source?.replaceOnCodeChange?.(profile)).toBe(true)
-    const namedFactory = {
-      ...profile,
-      zoneRouter: { ...profile.zoneRouter!, factory: address('f') },
-    }
-    expect(deployZoneRouter.source?.replaceOnCodeChange?.(namedFactory)).toBe(false)
   })
 })

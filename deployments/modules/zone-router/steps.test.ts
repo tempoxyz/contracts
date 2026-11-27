@@ -35,6 +35,19 @@ import { zoneRouterConstructorArgs, zoneRouterFactory, zoneRouterMode } from './
 import { zoneRouterSeedPlan } from './seeds.js'
 
 vi.mock(import('../earn/zone-router/provenance.js'), () => ({ requireRouterProvenance: vi.fn() }))
+/** The ZoneRouterFactory the mocked registry records on moderato; other chains keep the real entry. */
+const releasedFactory = vi.hoisted(() => '0x0000000000000000000000000000000000000fac' as const)
+vi.mock(import('../../core/releases.js'), async (original) => {
+  const actual = await original()
+  return {
+    ...actual,
+    releasedContract: vi.fn((chainId, key) =>
+      chainId === 42431 && key === 'zoneRouterFactory'
+        ? releasedFactory
+        : actual.releasedContract(chainId, key),
+    ),
+  }
+})
 // The release SendSpender for a customer id ending in an address is at that address, so tests choose
 // which listed spenders are releases without building the contracts.
 vi.mock(import('./releases.js'), async () => {
@@ -80,12 +93,7 @@ const cardAndEarn = profileWith({
   earn: earnBinding,
   spenders: [spender],
 })
-const card = profileWith({
-  zoneId: 7,
-  ops: ['spend'],
-  spenders: [spender],
-  factory: address('fac'),
-})
+const card = profileWith({ zoneId: 7, ops: ['spend'], spenders: [spender] })
 
 const outputs = {
   asset: address('a55e7'),
@@ -102,12 +110,15 @@ const routerSteps = (profile: typeof card) =>
     .filter((id) => id.includes('zone-router'))
 
 /**
- * A chain where `outputs.zoneRouter` is the factory's router for `mode`; `overrides` replace single
+ * A chain where `outputs.zoneRouter` is `factory`'s router for `mode`; `overrides` replace single
  * reads by function name.
  */
-function chain(profile: typeof card, overrides: Record<string, unknown> = {}) {
+function chain(
+  profile: typeof card,
+  overrides: Record<string, unknown> = {},
+  factory: Address = outputs.zoneRouterFactory,
+) {
   const mode = zoneRouterMode(profile, outputs)
-  const factory = profile.zoneRouter?.factory ?? outputs.zoneRouterFactory
   const reads: Record<string, unknown> = {
     isRouter: true,
     predict: outputs.zoneRouter,
@@ -142,9 +153,8 @@ function chain(profile: typeof card, overrides: Record<string, unknown> = {}) {
 }
 
 describe('Zone router steps', () => {
-  test('plans the factory, router, and only the activation its mode needs', () => {
+  test('plans the router and only the activation its mode needs', () => {
     expect(routerSteps(cardAndEarn)).toEqual([
-      'deploy-zone-router-factory',
       'deploy-zone-router',
       'authorize-zone-router',
       'enable-zone-router-tokens',
@@ -152,7 +162,7 @@ describe('Zone router steps', () => {
       'admit-zone-router-account',
       'seed-zone-router',
     ])
-    // A named factory is used as is; Spend needs no pool admission or Earn tokens.
+    // Spend needs no pool admission or Earn tokens.
     expect(routerSteps(card)).toEqual([
       'deploy-zone-router',
       'register-zone-router-gateway',
@@ -164,7 +174,6 @@ describe('Zone router steps', () => {
         profileWith({ zoneId: 7, ops: ['deposit'], earn: { privateAsset: address('a') } }),
       ),
     ).toEqual([
-      'deploy-zone-router-factory',
       'deploy-zone-router',
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
@@ -174,18 +183,32 @@ describe('Zone router steps', () => {
     expect(routerSteps(profileWith(undefined))).toEqual([])
   })
 
-  test('deploys the mode through the factory', () => {
+  test('deploys the mode through the recorded factory, else the released one', () => {
     const step = deploymentStep('deploy-zone-router') as FoundryStep
-    const input = decodeFunctionData({
-      abi: deployZoneRouterScriptAbi,
-      data: step.input(card, outputs, '/tmp/out.json'),
-    })
-    expect(input.args[0]).toEqual({
-      expectedChainId: 42431n,
-      factory: address('fac'),
-      mode: zoneRouterMode(card, outputs),
-      outputPath: '/tmp/out.json',
-    })
+    const { zoneRouterFactory: _factory, zoneRouter: _router, ...fresh } = outputs
+    for (const [recorded, factory] of [
+      [outputs, outputs.zoneRouterFactory],
+      [fresh, releasedFactory],
+    ] as const) {
+      const input = decodeFunctionData({
+        abi: deployZoneRouterScriptAbi,
+        data: step.input(card, recorded, '/tmp/out.json'),
+      })
+      expect(input.args[0]).toEqual({
+        expectedChainId: 42431n,
+        factory,
+        mode: zoneRouterMode(card, recorded),
+        outputPath: '/tmp/out.json',
+      })
+      // The released factory is admitted as an existing source-verified contract.
+      expect(step.creationEvent!(card, recorded)).toMatchObject({
+        address: factory,
+        output: 'zoneRouter',
+        source: { contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory' },
+      })
+    }
+    expect(step.intent).toEqual(['zoneRouter'])
+    expect(step.source?.replaceOnCodeChange?.(card)).toBe(true)
     expect(step.source?.constructorArgs(card, outputs)).toBe(
       zoneRouterConstructorArgs(zoneRouterMode(card, outputs)),
     )
@@ -218,19 +241,6 @@ describe('Zone router steps', () => {
         step.satisfied(chain(cardAndEarn, override), cardAndEarn, outputs),
       ).resolves.toBe(false)
     }
-  })
-
-  test('accepts a deployed factory only when it answers as one', async () => {
-    const step = deploymentStep('deploy-zone-router-factory')
-    await expect(
-      step.satisfied(chain(cardAndEarn, { isRouter: false }), cardAndEarn, outputs),
-    ).resolves.toBe(true)
-    await expect(
-      step.satisfied(chain(cardAndEarn), cardAndEarn, {
-        ...outputs,
-        zoneRouterFactory: address('1'),
-      }),
-    ).resolves.toBe(false)
   })
 
   test('whitelists the router on a protected EarnShare', () => {
@@ -320,55 +330,55 @@ describe('Zone router steps', () => {
     const creation = `0x${'d'.repeat(64)}` as const
     const getLogs = vi.fn(async () => [{ transactionHash: creation }])
     const client = {
-      ...chain(card),
+      ...chain(card, {}, releasedFactory),
       getBlockNumber: vi.fn(async () => 10n),
       getLogs,
     } as unknown as ChainClient
-    const { zoneRouter: _, ...unrecorded } = outputs
+    // Neither the router nor the released factory it came from is recorded yet; adoption records both.
+    const { zoneRouter: _, zoneRouterFactory: _factory, ...unrecorded } = outputs
     expect(await step.adopt!(client, card, unrecorded)).toEqual({
-      outputs: { ...unrecorded, zoneRouter: outputs.zoneRouter },
+      outputs: {
+        ...unrecorded,
+        zoneRouterFactory: releasedFactory,
+        zoneRouter: outputs.zoneRouter,
+      },
       transaction: creation,
     })
     expect(client.getBlockNumber).toHaveBeenCalledWith({ cacheTime: 0 })
     expect(getLogs).toHaveBeenCalledWith(
-      expect.objectContaining({ address: address('fac'), args: { router: outputs.zoneRouter } }),
+      expect.objectContaining({ address: releasedFactory, args: { router: outputs.zoneRouter } }),
     )
     // Nothing to adopt before the factory deployed the mode.
-    expect(await step.adopt!(chain(card, { isRouter: false }), card, unrecorded)).toBeUndefined()
+    expect(
+      await step.adopt!(chain(card, { isRouter: false }, releasedFactory), card, unrecorded),
+    ).toBeUndefined()
   })
 
   test('hands gateway admission to the Zone administrator with the provenance to check', () => {
     const step = deploymentStep('register-zone-router-gateway')
     if (step.execution !== 'authority') throw new Error('expected an authority step')
     const handoff = step.handoff(card, outputs)
-    expect(handoff).toContain(`ZoneRouterFactory ${address('fac')}.isRouter(${outputs.zoneRouter})`)
+    expect(handoff).toContain(
+      `confirm ZoneRouterFactory ${outputs.zoneRouterFactory}.isRouter(${outputs.zoneRouter})`,
+    )
     expect(handoff).toContain(
       `setGateway(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
     )
-    expect(handoff).toContain(
-      `${address('fac')} is source verified as src/zone/ZoneRouterFactory.sol`,
-    )
+    // The released factory source-verifies with its release, so no handoff asks a person to check it.
+    expect(handoff).not.toContain('source verified')
   })
 
-  test('never admits a router from a factory the profile names, even with the admin key', async () => {
-    const step = deploymentStep('register-zone-router-gateway')
-    if (step.execution !== 'authority') throw new Error('expected an authority step')
-    const environment = { ZONE_ADMIN_PRIVATE_KEY: authorityKey }
-    expect(step.signerAvailable!(card, environment, true)).toBe(false)
-    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
-    const authorityClient = vi.fn()
-    const result = await executeAvailableAuthority(
-      {
-        action: { id: 'register-zone-router-gateway' },
-        environment,
-        outputs,
-        profile: card,
-        rpcUrl: 'https://rpc.invalid',
-      },
-      { authorityClient: authorityClient as never, fundFromFaucet: vi.fn() as never },
-    )
-    expect(result).toBeUndefined()
-    expect(authorityClient).not.toHaveBeenCalled()
+  test('self-admits a router of any mode with the Zone admin key once authority is proven', () => {
+    for (const id of ['register-zone-router-gateway', 'admit-zone-router-account'] as const) {
+      const step = deploymentStep(id)
+      if (step.execution !== 'authority') throw new Error('expected an authority step')
+      const environment = { ZONE_ADMIN_PRIVATE_KEY: authorityKey }
+      for (const profile of [card, cardAndEarn]) {
+        expect(step.signerAvailable!(profile, environment, true)).toBe(true)
+        expect(step.signerAvailable!(profile, environment, false)).toBe(false)
+        expect(step.signerAvailable!(profile, {}, true)).toBe(false)
+      }
+    }
   })
 
   test.each([
@@ -453,40 +463,17 @@ describe('Zone router steps', () => {
     expect(sendTransactionSync).not.toHaveBeenCalled()
   })
 
-  test('leaves pool admission of a router from a factory the profile names to a person', async () => {
-    const named = profileWith({
-      zoneId: 7,
-      ops: ['deposit', 'redeem', 'spend'],
-      earn: earnBinding,
-      spenders: [spender],
-      factory: address('fac'),
-    })
+  test('admits a router on its conversion pool with the deployer key once authority is proven', () => {
     const step = deploymentStep('authorize-zone-router')
     if (step.execution !== 'authority') throw new Error('expected an authority step')
     const environment = { DEPLOYER_PRIVATE_KEY: `0x${'4'.repeat(64)}` }
-    expect(step.signerAvailable!(named, environment, true)).toBe(false)
     expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
-    expect(step.handoff(named, outputs)).toContain(
-      `ZoneRouterFactory ${address('fac')} is source verified as src/zone/ZoneRouterFactory.sol`,
+    expect(step.signerAvailable!(cardAndEarn, environment, false)).toBe(false)
+    const handoff = step.handoff(cardAndEarn, outputs)
+    expect(handoff).toContain(
+      `Confirm ZoneRouterFactory ${zoneRouterFactory(cardAndEarn, outputs)}.isRouter(${outputs.zoneRouter}) and the mode in its RouterDeployed event, and verify the router's canonical implementation`,
     )
-    expect(step.handoff(cardAndEarn, outputs)).not.toContain('source verified')
-    for (const profile of [named, cardAndEarn])
-      expect(step.handoff(profile, outputs)).toContain(
-        `Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${outputs.zoneRouter}) and the mode in its RouterDeployed event, and verify the router's canonical implementation`,
-      )
-    const authorityClient = vi.fn()
-    const result = await executeAvailableAuthority(
-      {
-        action: { id: 'authorize-zone-router' },
-        environment,
-        outputs,
-        profile: named,
-        rpcUrl: 'https://rpc.invalid',
-      },
-      { authorityClient: authorityClient as never, fundFromFaucet: vi.fn() as never },
-    )
-    expect(result).toBeUndefined()
-    expect(authorityClient).not.toHaveBeenCalled()
+    expect(handoff).not.toContain('source verified')
   })
 
   test.each([
@@ -549,14 +536,14 @@ describe('Zone router steps', () => {
     })
   })
 
-  test('hands account admission of a router from a named factory to the Zone administrator', () => {
+  test('hands account admission to the Zone administrator with the provenance to check', () => {
     const step = deploymentStep('admit-zone-router-account')
     if (step.execution !== 'authority') throw new Error('expected an authority step')
-    const environment = { ZONE_ADMIN_PRIVATE_KEY: authorityKey }
-    expect(step.signerAvailable!(card, environment, true)).toBe(false)
-    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
     const handoff = step.handoff(card, outputs)
-    expect(handoff).toContain('is source verified as src/zone/ZoneRouterFactory.sol')
+    expect(handoff).toContain(
+      `confirm ZoneRouterFactory ${outputs.zoneRouterFactory}.isRouter(${outputs.zoneRouter})`,
+    )
+    expect(handoff).not.toContain('source verified')
     expect(handoff).toContain(
       `setAllowedAccount(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
     )
@@ -715,10 +702,14 @@ describe('Zone router steps', () => {
 })
 
 describe('Zone router preflight', () => {
-  /** A chain where every address has code and each spender reports `routerFactory`. */
-  const preflightChain = (routerFactory: unknown) =>
+  /**
+   * A chain where every address but `empty` has code and each spender reports `routerFactory`.
+   */
+  const preflightChain = (routerFactory: unknown, empty?: Address) =>
     ({
-      getCode: vi.fn(async () => '0x6080' as const),
+      getCode: vi.fn(async ({ address }: { address: Address }) =>
+        address === empty ? ('0x' as const) : ('0x6080' as const),
+      ),
       readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
         if (functionName === 'isRouter') return false
         if (functionName === 'ROUTER_FACTORY' && routerFactory) return routerFactory
@@ -726,24 +717,45 @@ describe('Zone router preflight', () => {
       }),
     }) as never
 
-  test('accepts spenders bound to the factory the profile names', async () => {
+  test('accepts spenders bound to the released factory, or to the recorded one', async () => {
     await expect(
-      zoneRouterModeModule.preflight!(preflightChain(card.zoneRouter!.factory), card),
+      zoneRouterModeModule.preflight!(preflightChain(releasedFactory), card),
+    ).resolves.toBeUndefined()
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(outputs.zoneRouterFactory), card, outputs),
     ).resolves.toBeUndefined()
   })
 
   test('refuses spenders whose routers would come from another factory', async () => {
     const other = address('bad0')
     await expect(zoneRouterModeModule.preflight!(preflightChain(other), card)).rejects.toThrow(
-      `zoneRouter.spenders[0] ${spender} takes spendFrom only from routers of ZoneRouterFactory ${other}, not zoneRouter.factory ${card.zoneRouter!.factory}`,
+      `zoneRouter.spenders[0] ${spender} takes spendFrom only from routers of ZoneRouterFactory ${other}, not the router's ${releasedFactory}`,
     )
-    // A factory the lifecycle deploys is never the one an existing spender is bound to.
-    await expect(
-      zoneRouterModeModule.preflight!(preflightChain(other), cardAndEarn),
-    ).rejects.toThrow('set zoneRouter.factory to it')
     await expect(zoneRouterModeModule.preflight!(preflightChain(undefined), card)).rejects.toThrow(
       'reports no ROUTER_FACTORY',
     )
+  })
+
+  test('requires the released factory to hold code and answer as one', async () => {
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(releasedFactory, releasedFactory), card),
+    ).rejects.toThrow(`No runtime code at ZoneRouterFactory ${releasedFactory}`)
+    const client = preflightChain(releasedFactory)
+    await zoneRouterModeModule.preflight!(client, card)
+    expect((client as ChainClient).readContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: releasedFactory,
+        functionName: 'isRouter',
+        args: [zeroAddress],
+      }),
+    )
+    const unreleased = profileWith(
+      { zoneId: 7, ops: ['spend'], spenders: [spender] },
+      { chainId: 4217 },
+    )
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(releasedFactory), unreleased),
+    ).rejects.toThrow('No zoneRouterFactory release on mainnet; run pnpm release mainnet')
   })
 })
 

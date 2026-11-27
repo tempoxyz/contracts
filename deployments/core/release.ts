@@ -17,14 +17,19 @@ import {
   keccak256,
   parseAbiParameters,
   stringToBytes,
+  zeroAddress,
+  zeroHash,
   type Address,
   type Hex,
   type PublicClient,
-  type TransactionReceipt,
 } from 'viem'
 import { Addresses } from 'viem/tempo'
 
-import { deployFactoryReleaseScriptAbi } from '../abis/index.js'
+import {
+  deployBridgeCardsScriptAbi,
+  deployFactoryReleaseScriptAbi,
+  deployRouterReleaseScriptAbi,
+} from '../abis/index.js'
 import {
   assertFoundryVersion,
   assertFoundryProjectEnvironment,
@@ -35,7 +40,7 @@ import {
 } from '../chain/foundry.js'
 import { redactRpcCredentials } from '../chain/rpc-credentials.js'
 import { configuredRpcTransport, rpcConfiguration } from '../chain/runtime.js'
-import { hostedEnvironments, type HostedEnvironmentId } from '../chain/tempo.js'
+import { hostedEnvironment, hostedEnvironments, type HostedEnvironmentId } from '../chain/tempo.js'
 import { engineFactories } from '../modules/earn/engines/index.js'
 import {
   address,
@@ -45,23 +50,35 @@ import {
   positiveInteger,
   nonemptyString as string,
 } from './parse.js'
+import { bridgeSpenderFactories, releaseKeys, type ReleaseKey } from './releases.js'
 import { verifyContractSource } from './verify.js'
 
 const releaseScript = 'script/earn/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
+const routerReleaseScript = 'script/zone/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript'
+const cardReleaseScript =
+  'script/spend/bridge/lifecycle/DeployBridgeCards.s.sol:DeployBridgeCardsScript'
 
 /**
- * Every shared release one run deploys: the core release (EarnVault and EarnFees implementations
- * and the EarnFactory bound to them), the rewards factory, and each engine factory by its
- * `releaseKey`. The router project's contracts release through the same engine with their own
- * kinds and CLI (`zone-router-release.ts`).
+ * Every shared contract `pnpm release` deploys, in deploy order: the core release (EarnVault and
+ * EarnFees implementations and the EarnFactory bound to them), the rewards factory, each engine
+ * factory by its `releaseKey`, the ZoneRouterFactory, the SendSpender bound to it, the CardFactory
+ * bound to it, and Bridge's "TS" handler. Each is ownerless and immutable, created at its CREATE2
+ * release address, and recorded in the network's registry entry (`releases.ts`).
  */
-export const factoryReleaseKinds = [
+export const releaseKinds = [
   'core',
   'rewards',
   ...engineFactories.map((factory) => factory.releaseKey),
+  'zoneRouterFactory',
+  'sendSpender',
+  'cardFactory',
+  'tempoSpend',
 ] as const
 
-export type FactoryReleaseKind = (typeof factoryReleaseKinds)[number]
+export type ReleaseKind = (typeof releaseKinds)[number]
+
+/** The card releases, deployed only where the network declares Bridge's SpenderFactory. */
+const cardReleaseKinds: readonly ReleaseKind[] = ['cardFactory', 'tempoSpend']
 
 /**
  * The CREATE2 deployer every release contract is created through: forge-std's `CREATE2_FACTORY`, which
@@ -78,21 +95,18 @@ export type ReleaseContract = {
   contract: string
   /** ABI-encoded constructor arguments, given the addresses of the release's earlier contracts. */
   constructorArgs?: (addresses: Readonly<Record<string, Address>>) => Hex
-  /**
-   * The contract that creates it with CREATE2, and its salt, for one created inside a call (a
-   * ZoneRouter its factory creates); `create2Deployer` with `releaseSalt` when omitted.
-   */
-  creator?: { address: Address; salt: Hex }
-  /** Confirms a nested creation from its mined event, never simulation metadata. */
-  createdInReceipt?: (receipt: TransactionReceipt, address: Address) => boolean
 }
 
 /** A release's validated parameters, as its result records them; empty for a kind that takes none. */
 export type ReleaseParameters = Readonly<Record<string, unknown>>
 
-/** One release of the shared engine: its entry point and the contracts it creates. */
-export type ReleasePlan<Kind extends string = string> = {
-  kind: Kind
+/**
+ * One release: its entry point and the contracts it creates, the last of them the one its registry
+ * key names. A contract it binds that another release creates (the ZoneRouterFactory) comes first,
+ * created only when missing, so each release simulates alone.
+ */
+export type ReleasePlan = {
+  kind: ReleaseKind
   /** `path:Contract` of the Foundry script. */
   script: string
   parameters: ReleaseParameters
@@ -100,18 +114,20 @@ export type ReleasePlan<Kind extends string = string> = {
   calldata: Hex
   /** The contracts the entry point creates, each exactly once. */
   contracts: readonly ReleaseContract[]
-  /** The release's registry entry key, for a release the registry names. */
-  registryKey?: string
+  /** The release's key in the network's registry entry, which names its last contract. */
+  registryKey: ReleaseKey
   /** Extra `forge script` arguments. */
   forgeArguments: readonly string[]
-  /** Onchain bindings required even when every release address already exists. */
-  validate?: (client: Pick<PublicClient, 'readContract'>) => Promise<void>
 }
 
-export type FactoryReleasePlan = ReleasePlan<FactoryReleaseKind>
+const zoneRouterFactoryContract = {
+  name: 'ZoneRouterFactory',
+  contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
+}
+const addressArgument = parseAbiParameters('address')
 
 /** The release entry point and the contracts it creates for one release kind on one chain. */
-export function planFactoryRelease(kind: string, chainId: number): FactoryReleasePlan {
+export function planRelease(kind: string, chainId: number): ReleasePlan {
   const expectedChainId = BigInt(chainId)
   if (kind === 'core') {
     return {
@@ -139,7 +155,7 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
       ],
       registryKey: 'earn',
       // Tempo's RPC supplies the large EarnVault creation estimate; default padding can exceed its
-      // 30M gas cap (docs/deployment/deployment.md#shared-factory-releases).
+      // 30M gas cap (docs/deployment/deployment.md#releases).
       forgeArguments: ['--gas-estimate-multiplier', '100'],
     }
   }
@@ -159,14 +175,109 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
           contract: 'src/earn/rewards/EarnRewardsFactory.sol:EarnRewardsFactory',
         },
       ],
+      registryKey: 'rewards',
+      forgeArguments: [],
+    }
+  }
+  if (kind === 'zoneRouterFactory') {
+    return {
+      kind,
+      script: routerReleaseScript,
+      parameters: {},
+      calldata: encodeFunctionData({
+        abi: deployRouterReleaseScriptAbi,
+        functionName: 'zoneRouterFactory',
+        args: [expectedChainId],
+      }),
+      contracts: [zoneRouterFactoryContract],
+      registryKey: 'zoneRouterFactory',
+      forgeArguments: [],
+    }
+  }
+  if (kind === 'sendSpender') {
+    // The SendSpender that never converts, bound to the release ZoneRouterFactory.
+    return {
+      kind,
+      script: routerReleaseScript,
+      parameters: {},
+      calldata: encodeFunctionData({
+        abi: deployRouterReleaseScriptAbi,
+        functionName: 'sendSpender',
+        args: [expectedChainId, zeroAddress, zeroAddress, zeroAddress, zeroHash],
+      }),
+      contracts: [
+        zoneRouterFactoryContract,
+        {
+          name: 'SendSpender',
+          contract: 'src/zone/spenders/SendSpender.sol:SendSpender',
+          constructorArgs: (addresses) =>
+            encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
+              requiredAddress(addresses, zoneRouterFactoryContract.name),
+              zeroAddress,
+              zeroAddress,
+              zeroHash,
+            ]),
+        },
+      ],
+      registryKey: 'sendSpender',
+      forgeArguments: [],
+    }
+  }
+  if (kind === 'cardFactory') {
+    return {
+      kind,
+      script: cardReleaseScript,
+      parameters: {},
+      calldata: encodeFunctionData({
+        abi: deployBridgeCardsScriptAbi,
+        functionName: 'cardFactory',
+        args: [expectedChainId],
+      }),
+      contracts: [
+        zoneRouterFactoryContract,
+        {
+          name: 'CardFactory',
+          contract: 'src/spend/CardFactory.sol:CardFactory',
+          constructorArgs: (addresses) =>
+            encodeAbiParameters(addressArgument, [
+              requiredAddress(addresses, zoneRouterFactoryContract.name),
+            ]),
+        },
+      ],
+      registryKey: 'cardFactory',
+      forgeArguments: [],
+    }
+  }
+  if (kind === 'tempoSpend') {
+    const network = hostedEnvironment(chainId)
+    const spenderFactory = network ? bridgeSpenderFactories[network.id] : null
+    if (!spenderFactory)
+      throw new Error(
+        `No Bridge SpenderFactory is declared for chain ${chainId} (bridgeSpenderFactories in deployments/core/releases.ts)`,
+      )
+    return {
+      kind,
+      script: cardReleaseScript,
+      parameters: { factory: spenderFactory },
+      calldata: encodeFunctionData({
+        abi: deployBridgeCardsScriptAbi,
+        functionName: 'tempoSpend',
+        args: [expectedChainId, spenderFactory],
+      }),
+      contracts: [
+        {
+          name: 'SpenderTempoSpend',
+          contract: 'src/spend/providers/bridge/SpenderTempoSpend.sol:SpenderTempoSpend',
+          constructorArgs: () => encodeAbiParameters(addressArgument, [spenderFactory]),
+        },
+      ],
+      registryKey: 'tempoSpend',
       forgeArguments: [],
     }
   }
   const factory = engineFactories.find((candidate) => candidate.releaseKey === kind)
   if (!factory) {
-    throw new Error(
-      `Unknown factory release ${kind}; expected one of ${factoryReleaseKinds.join(', ')}`,
-    )
+    throw new Error(`Unknown release ${kind}; expected one of ${releaseKinds.join(', ')}`)
   }
   return {
     kind: factory.releaseKey,
@@ -186,7 +297,7 @@ type BroadcastFile = {
     contractAddress?: string | null
     hash?: string | null
     transaction?: { input?: string | null }
-    /** Contracts the transaction created inside its call, such as a ZoneRouter its factory created. */
+    /** Contracts the transaction created inside its call. */
     additionalContracts?: {
       transactionType?: string
       contractName?: string | null
@@ -197,10 +308,7 @@ type BroadcastFile = {
   receipts?: { transactionHash?: string; status?: string }[]
 }
 
-export type CreatedContract = Omit<
-  ReleaseContract,
-  'constructorArgs' | 'creator' | 'createdInReceipt'
-> & {
+export type CreatedContract = Omit<ReleaseContract, 'constructorArgs'> & {
   address: Address
   /** The creating transaction; null for a contract that already existed at its address. */
   transaction: Hex | null
@@ -215,30 +323,33 @@ function requiredAddress(addresses: Readonly<Record<string, Address>>, name: str
   return address
 }
 
+/** The address `initCode` (creation code and constructor arguments) is released at. */
+export function releaseAddress(initCode: Hex) {
+  return getContractAddress({
+    opcode: 'CREATE2',
+    from: create2Deployer,
+    salt: releaseSalt,
+    bytecode: initCode,
+  })
+}
+
 /**
  * The deterministic address of each release contract: its creation code and constructor arguments
- * created through `create2Deployer` with `releaseSalt`, or by its own `creator`, in the release's
- * order, so a contract that binds earlier ones (the EarnFactory) is predicted from their addresses.
+ * created through `create2Deployer` with `releaseSalt`, in the release's order, so a contract that
+ * binds earlier ones (the EarnFactory) is predicted from their addresses.
  */
 export function predictRelease(
   plan: ReleasePlan,
   creationBytecode: (contract: string) => Hex,
 ): PredictedContract[] {
   const addresses: Record<string, Address> = {}
-  return plan.contracts.map(
-    ({ constructorArgs: encode, creator, createdInReceipt: _createdInReceipt, ...contract }) => {
-      const constructorArgs = encode?.(addresses) ?? '0x'
-      const initCode = concatHex([creationBytecode(contract.contract), constructorArgs])
-      const address = getContractAddress({
-        opcode: 'CREATE2',
-        from: creator?.address ?? create2Deployer,
-        salt: creator?.salt ?? releaseSalt,
-        bytecode: initCode,
-      })
-      addresses[contract.name] = address
-      return { ...contract, address, transaction: null, constructorArgs, initCode }
-    },
-  )
+  return plan.contracts.map(({ constructorArgs: encode, ...contract }) => {
+    const constructorArgs = encode?.(addresses) ?? '0x'
+    const initCode = concatHex([creationBytecode(contract.contract), constructorArgs])
+    const address = releaseAddress(initCode)
+    addresses[contract.name] = address
+    return { ...contract, address, transaction: null, constructorArgs, initCode }
+  })
 }
 
 /**
@@ -267,7 +378,7 @@ type Creation = { name: string | null; address: Address | null; hash: Hex | null
 /**
  * Every contract a broadcast file records as created: each creating transaction's contract (for the
  * CREATE2 deployer, whose calldata is the salt followed by the creation code, that creation code)
- * and each contract a transaction created inside its call, such as a ZoneRouter its factory created.
+ * and each contract a transaction created inside its call.
  */
 function broadcastCreations(file: BroadcastFile): Creation[] {
   const optionalAddress = (value: string | null | undefined) => (value ? getAddress(value) : null)
@@ -299,9 +410,8 @@ function broadcastCreations(file: BroadcastFile): Creation[] {
 /**
  * Reads the contracts a release run created from its broadcast file, matched by address. It must
  * have created exactly the predicted contracts that did not exist yet, each once, at its
- * deterministic address, from its locally compiled creation code, whether a transaction created it
- * or a call did (a ZoneRouter its factory creates), and, after a broadcast, each in a transaction
- * with a successful receipt. Contracts that existed keep a null transaction.
+ * deterministic address, from its locally compiled creation code, and, after a broadcast, each in a
+ * transaction with a successful receipt. Contracts that existed keep a null transaction.
  */
 export function createdContracts(
   plan: ReleasePlan,
@@ -353,7 +463,6 @@ export function archiveReleaseBroadcast(path: string) {
 /** Reconciles Forge's simulated creations against the mined transaction and receipt. */
 export async function confirmReleaseCreations(
   client: Pick<PublicClient, 'getTransactionReceipt' | 'getTransaction'>,
-  plan: ReleasePlan,
   created: readonly CreatedContract[],
   predicted: readonly PredictedContract[],
 ): Promise<CreatedContract[]> {
@@ -366,15 +475,6 @@ export async function confirmReleaseCreations(
         receipt.transactionHash.toLowerCase() !== contract.transaction.toLowerCase()
       )
         throw new Error(`${contract.name} creation has no successful mined receipt`)
-      const definition = plan.contracts.find((entry) => entry.name === contract.name)!
-      if (definition.creator) {
-        if (!definition.createdInReceipt)
-          throw new Error(`${contract.name} has no mined creation evidence checker`)
-        // A competing deployment can turn the simulated factory creation into a successful reuse.
-        return definition.createdInReceipt(receipt, contract.address)
-          ? contract
-          : { ...contract, transaction: null }
-      }
       const transaction = await client.getTransaction({ hash: contract.transaction })
       const expected = predicted.find((entry) => entry.name === contract.name)!
       if (
@@ -391,10 +491,10 @@ export async function confirmReleaseCreations(
 // Preserve the release module's existing redaction API for its callers.
 export { redactRpcCredentials } from '../chain/rpc-credentials.js'
 
-export type ReleaseResult<Kind extends string = string> = {
+export type ReleaseResult = {
   network: HostedEnvironmentId
   chainId: number
-  kind: Kind
+  kind: ReleaseKind
   /** The release's parameters, for a kind that takes them. */
   parameters?: ReleaseParameters
   broadcast: boolean
@@ -405,13 +505,11 @@ export type ReleaseResult<Kind extends string = string> = {
   })[]
   /** Set when every contract already existed at its deterministic address, so nothing was created. */
   current?: true
-  /** The release registry entry to review into deployments/core/releases.ts, when it names one. */
-  registry: Record<string, Address> | null
+  /** The registry entry to record in deployments/core/releases.ts. */
+  registry: Partial<Record<ReleaseKey, Address>>
 }
 
-export type FactoryReleaseResult = ReleaseResult<FactoryReleaseKind>
-
-export type FactoryReleaseDependencies = {
+export type ReleaseDependencies = {
   /** RPC reads are made before even an already-deployed release can be certified. */
   client: (
     rpc: ReturnType<typeof rpcConfiguration>,
@@ -443,7 +541,7 @@ export type FactoryReleaseDependencies = {
   verify: typeof verifyContractSource
 }
 
-const defaultDependencies: FactoryReleaseDependencies = {
+const defaultDependencies: ReleaseDependencies = {
   client: (rpc) => createPublicClient({ transport: configuredRpcTransport(rpc) }),
   archiveBroadcast: archiveReleaseBroadcast,
   confirmCreations: confirmReleaseCreations,
@@ -497,7 +595,7 @@ const defaultDependencies: FactoryReleaseDependencies = {
   verify: verifyContractSource,
 }
 
-/** Where and how one release runs; the release itself comes from its CLI's plan. */
+/** Where and how one release runs. */
 export type ReleaseOptions = {
   /** Request canonical re-verification of invalid verifier entries after deployment. */
   resubmit?: boolean
@@ -509,34 +607,15 @@ export type ReleaseOptions = {
 }
 
 /**
- * Deploys one shared factory release on a hosted network with the deploy profile, then source
- * verifies every contract in it against Tempo's verifier (`deployRelease`).
+ * Deploys one release on a hosted network with the repository's deploy profile, then source verifies
+ * every contract in it against Tempo's verifier. Each contract is created at its deterministic
+ * address only when that address has no code yet, so a release that already exists is reconciled
+ * without broadcasting. Without `broadcast`, Forge only simulates, and nothing is signed or verified.
  */
-export function deployFactoryRelease(
+export async function deployRelease(
   options: ReleaseOptions & { kind: string },
-  dependencies: Partial<FactoryReleaseDependencies> = {},
-): Promise<FactoryReleaseResult> {
-  const { kind, ...release } = options
-  return deployRelease(
-    { ...release, plan: (chainId) => planFactoryRelease(kind, chainId) },
-    dependencies,
-  )
-}
-
-/**
- * The shared release engine: deploys one planned release on a hosted network with its Foundry
- * project's deploy profile, then source verifies every contract in it against Tempo's verifier.
- * Each contract is created at its deterministic address only when that address has no code yet, so
- * a release that already exists is reconciled without broadcasting. Without `broadcast`, Forge only
- * simulates, and nothing is signed or verified.
- */
-export async function deployRelease<Kind extends string>(
-  options: ReleaseOptions & {
-    /** The release for the network's chain ID; it refuses invalid parameters before Forge runs. */
-    plan: (chainId: number) => ReleasePlan<Kind>
-  },
-  dependencies: Partial<FactoryReleaseDependencies> = {},
-): Promise<ReleaseResult<Kind>> {
+  dependencies: Partial<ReleaseDependencies> = {},
+): Promise<ReleaseResult> {
   if (options.resubmit && !options.broadcast)
     throw new Error('--resubmit-verification requires --broadcast')
   const runtime = { ...defaultDependencies, ...dependencies }
@@ -546,7 +625,7 @@ export async function deployRelease<Kind extends string>(
       `Unknown hosted network ${options.network}; expected one of ${Object.keys(hostedEnvironments).join(', ')}`,
     )
   }
-  const plan = options.plan(network.chainId)
+  const plan = planRelease(options.kind, network.chainId)
   if (!options.environment.DEPLOYER_PRIVATE_KEY) throw new Error('DEPLOYER_PRIVATE_KEY is required')
   const rpc = rpcConfiguration('TEMPO', options.environment, network.rpcUrl)
   if (!rpc.authenticatedUrl) throw new Error(`No RPC for ${network.id}`)
@@ -558,7 +637,6 @@ export async function deployRelease<Kind extends string>(
     throw new Error(
       `Release RPC chain ${actualChainId} does not match ${network.id} (${network.chainId})`,
     )
-  await plan.validate?.(client)
   runtime.preflight(root, options.environment)
   const predicted = predictRelease(plan, (contract) =>
     runtime.creationBytecode(root, contract, options.environment),
@@ -617,8 +695,7 @@ export async function deployRelease<Kind extends string>(
         existing,
         options.broadcast,
       )
-      if (options.broadcast)
-        created = await runtime.confirmCreations(client, plan, created, predicted)
+      if (options.broadcast) created = await runtime.confirmCreations(client, created, predicted)
     }
   }
 
@@ -656,7 +733,6 @@ export async function deployRelease<Kind extends string>(
       })
     }
   }
-  const registryContract = plan.registryKey ? created.at(-1) : undefined
   return {
     network: network.id,
     chainId: network.chainId,
@@ -665,56 +741,47 @@ export async function deployRelease<Kind extends string>(
     broadcast: options.broadcast,
     contracts,
     ...(current ? { current: true as const } : {}),
-    registry:
-      plan.registryKey && registryContract
-        ? { [plan.registryKey]: registryContract.address }
-        : null,
+    registry: { [plan.registryKey]: created.at(-1)!.address },
   }
 }
-
-/** The releases the registry names, in deploy order; `all` deploys these. */
-export const registryReleaseKinds = factoryReleaseKinds.filter((kind) => kind !== 'rewards')
 
 /**
- * The release kinds one selection deploys: `all`, or a single kind. The router project's kinds are
- * not among them: they release with `pnpm zone-router-release`.
+ * Every release a network takes, in deploy order: all of them, except the card releases where the
+ * network declares no Bridge SpenderFactory, since no profile can declare a card program there.
  */
-export function releaseKindsFor(selection: string): FactoryReleaseKind[] {
-  if (selection === 'all') return [...registryReleaseKinds]
-  if (!(factoryReleaseKinds as readonly string[]).includes(selection)) {
+export function networkReleaseKinds(network: string): ReleaseKind[] {
+  if (!Object.hasOwn(hostedEnvironments, network))
     throw new Error(
-      `Unknown factory release ${selection}; expected all or one of ${factoryReleaseKinds.join(', ')} (Zone router contracts release with pnpm zone-router-release)`,
+      `Unknown hosted network ${network}; expected one of ${Object.keys(hostedEnvironments).join(', ')}`,
     )
-  }
-  return [selection as FactoryReleaseKind]
+  const cards = bridgeSpenderFactories[network as HostedEnvironmentId] !== null
+  return releaseKinds.filter((kind) => cards || !cardReleaseKinds.includes(kind))
 }
 
-/** One network's run of one or more releases, written after each release so a failure keeps the rest. */
-export type ReleaseRun<Kind extends string = string> = {
+/** One network's run of its releases, written after each release so a failure keeps the rest. */
+export type ReleaseRun = {
   network: string
   chainId: number | null
   broadcast: boolean
-  releases: ReleaseResult<Kind>[]
+  releases: ReleaseResult[]
   /** The release that stopped the run, when one did. */
   failed?: { kind: string }
 }
-
-export type FactoryReleaseRun = ReleaseRun<FactoryReleaseKind>
 
 /**
  * Runs each release in turn on one network, writing the run to `output` after each so a failure
  * keeps the releases before it, then fails on any deployed contract whose source verification
  * failed, pointing to `retry` for how to retry it without redeploying.
  */
-export async function runReleases<Kind extends string>(options: {
+export async function runReleases(options: {
   network: string
-  kinds: readonly Kind[]
+  kinds: readonly ReleaseKind[]
   broadcast: boolean
   output: string | undefined
-  deploy: (kind: Kind) => Promise<ReleaseResult<Kind>>
+  deploy: (kind: ReleaseKind) => Promise<ReleaseResult>
   retry: string
-}): Promise<ReleaseRun<Kind>> {
-  const run: ReleaseRun<Kind> = {
+}): Promise<ReleaseRun> {
+  const run: ReleaseRun = {
     network: options.network,
     chainId: hostedEnvironments[options.network as HostedEnvironmentId]?.chainId ?? null,
     broadcast: options.broadcast,
@@ -749,7 +816,7 @@ export async function runReleases<Kind extends string>(options: {
 }
 
 /** Parses result files before they can become a reviewed registry change. */
-export function parseReleaseRun(value: unknown): FactoryReleaseRun {
+export function parseReleaseRun(value: unknown): ReleaseRun {
   const run = object(value, 'release run')
   exactKeys(run, 'release run', ['network', 'chainId', 'broadcast', 'releases'], ['failed'])
   const network = string(run.network, 'network')
@@ -760,7 +827,7 @@ export function parseReleaseRun(value: unknown): FactoryReleaseRun {
     throw new Error(`Release run chainId does not match ${network}`)
   if (typeof run.broadcast !== 'boolean') throw new Error('broadcast must be boolean')
   const broadcast = run.broadcast
-  const releases = array(run.releases, 'releases').map((value, index): FactoryReleaseResult => {
+  const releases = array(run.releases, 'releases').map((value, index): ReleaseResult => {
     const path = `releases.${index}`
     const release = object(value, path)
     exactKeys(
@@ -775,9 +842,12 @@ export function parseReleaseRun(value: unknown): FactoryReleaseRun {
       release.broadcast !== broadcast
     )
       throw new Error(`${path} does not match its run`)
-    const plan = planFactoryRelease(string(release.kind, `${path}.kind`), chainId)
-    if (release.parameters !== undefined)
-      exactKeys(object(release.parameters, `${path}.parameters`), `${path}.parameters`, [])
+    const plan = planRelease(string(release.kind, `${path}.kind`), chainId)
+    if (
+      JSON.stringify(release.parameters ?? {}) !== JSON.stringify(plan.parameters) ||
+      (release.parameters !== undefined && Object.keys(plan.parameters).length === 0)
+    )
+      throw new Error(`${path}.parameters do not match the ${plan.kind} release`)
     if (release.current !== undefined && release.current !== true)
       throw new Error(`${path}.current must be true`)
     const contracts = array(release.contracts, `${path}.contracts`).map((value) => {
@@ -810,19 +880,17 @@ export function parseReleaseRun(value: unknown): FactoryReleaseRun {
           : { verificationError: string(contract.verificationError, 'verificationError') }),
       }
     })
-    const registry =
-      release.registry === null
-        ? null
-        : Object.fromEntries(
-            Object.entries(object(release.registry, 'registry')).map(([key, value]) => [
-              key,
-              address(value, `registry.${key}`),
-            ]),
-          )
+    const registry = Object.fromEntries(
+      Object.entries(object(release.registry, 'registry')).map(([key, value]) => [
+        key,
+        address(value, `registry.${key}`),
+      ]),
+    )
     return {
       network: network as HostedEnvironmentId,
       chainId,
       kind: plan.kind,
+      ...(Object.keys(plan.parameters).length > 0 ? { parameters: plan.parameters } : {}),
       broadcast,
       contracts,
       registry,
@@ -839,16 +907,16 @@ export function parseReleaseRun(value: unknown): FactoryReleaseRun {
     broadcast,
     releases,
     ...(failed
-      ? { failed: { kind: planFactoryRelease(string(failed.kind, 'failed.kind'), chainId).kind } }
+      ? { failed: { kind: planRelease(string(failed.kind, 'failed.kind'), chainId).kind } }
       : {}),
   }
 }
 
-type RegistryUpdate = { network: string; key: string; address: Address; kind: string }
+type RegistryUpdate = { network: string; key: ReleaseKey; address: Address; kind: string }
 
 /**
- * The registry entries a set of runs proves: each broadcast release that names a registry entry and
- * whose every contract source verified. Anything else is skipped with its reason.
+ * The registry entries a set of runs proves: each broadcast release whose every contract source
+ * verified. Anything else is skipped with its reason.
  */
 export function registryUpdates(
   values: readonly unknown[],
@@ -865,12 +933,7 @@ export function registryUpdates(
   for (const run of runs) {
     if (run.failed) skipped.push({ network: run.network, kind: run.failed.kind, reason: 'failed' })
     for (const release of run.releases) {
-      const plan = planFactoryRelease(release.kind, release.chainId)
-      if (!plan.registryKey) {
-        if (release.registry !== null)
-          throw new Error(`Release ${release.kind} has no registry entry`)
-        continue
-      }
+      const plan = planRelease(release.kind, release.chainId)
       if (!run.broadcast || !release.broadcast) {
         skipped.push({ network: run.network, kind: release.kind, reason: 'dry run' })
         continue
@@ -905,14 +968,16 @@ export function registryUpdates(
           )
       }
       if (
-        !release.registry ||
         Object.keys(release.registry).length !== 1 ||
         release.registry[plan.registryKey] !== predicted.at(-1)!.address
       )
         throw new Error(`Release ${release.kind} registry does not match its deterministic address`)
-      for (const [key, address] of Object.entries(release.registry)) {
-        updates.push({ network: run.network, key, address, kind: release.kind })
-      }
+      updates.push({
+        network: run.network,
+        key: plan.registryKey,
+        address: predicted.at(-1)!.address,
+        kind: release.kind,
+      })
     }
   }
   return { updates, skipped }
@@ -927,13 +992,13 @@ export function updateReleaseRegistry(
   for (const { network, key, address } of updates) {
     if (!Object.hasOwn(hostedEnvironments, network))
       throw new Error(`releases.ts has no ${network} release`)
-    const keys = ['earn', ...engineFactories.map((factory) => factory.releaseKey)]
-    if (!keys.includes(key)) throw new Error(`releases.ts has no ${network}.${key} entry`)
-    const start = result.indexOf(`\n  ${network}: {\n    factories: {\n`)
-    const end = start < 0 ? -1 : result.indexOf('\n    },\n', start)
+    if (!(releaseKeys as readonly string[]).includes(key))
+      throw new Error(`releases.ts has no ${network}.${key} entry`)
+    const start = result.indexOf(`\n  ${network}: {\n`)
+    const end = start < 0 ? -1 : result.indexOf('\n  },\n', start)
     if (start < 0 || end < 0) throw new Error(`releases.ts has no ${network} release`)
     const block = result.slice(start, end)
-    const entry = new RegExp(`^(      ${key}: )(?:getAddress\\('0x[0-9a-fA-F]{40}'\\)|null),$`, 'm')
+    const entry = new RegExp(`^(    ${key}: )(?:getAddress\\('0x[0-9a-fA-F]{40}'\\)|null),$`, 'm')
     if (!entry.test(block)) throw new Error(`releases.ts has no ${network}.${key} entry`)
     result =
       result.slice(0, start) +
@@ -945,12 +1010,12 @@ export function updateReleaseRegistry(
 
 /** The pull request body that records the updates, with each contract's verification. */
 export function registryPullRequestBody(
-  runs: readonly FactoryReleaseRun[],
+  runs: readonly ReleaseRun[],
   summary: ReturnType<typeof registryUpdates>,
   runUrl?: string,
 ) {
   const lines = [
-    `Records the shared factory releases${runUrl ? ` from [the Factory Release run](${runUrl})` : ''} in [\`releases.ts\`](deployments/core/releases.ts). Each was broadcast from \`main\` and source verified on contracts.tempo.xyz.`,
+    `Records the releases${runUrl ? ` from [the Deploy run](${runUrl})` : ''} in [\`releases.ts\`](deployments/core/releases.ts). Each was broadcast from \`main\` and source verified on contracts.tempo.xyz.`,
     '',
     '| Network | Release | Contract | Address | Transaction | Source match |',
     '| --- | --- | --- | --- | --- | --- |',
@@ -978,11 +1043,10 @@ export function registryPullRequestBody(
 }
 
 const usage =
-  'Usage: pnpm factory-release <network> <release|all> [--broadcast] [--resubmit-verification] [--output <file>]\n' +
-  '       pnpm factory-release registry <result.json>... [--body <file>]\n' +
+  'Usage: pnpm release <network> [--broadcast] [--resubmit-verification] [--output <file>]\n' +
+  '       pnpm release registry <result.json>... [--body <file>]\n' +
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
-  `  release: all (${registryReleaseKinds.join(', ')}) | ${factoryReleaseKinds.join(' | ')}\n` +
-  'Zone router contracts release with pnpm zone-router-release.'
+  `  deploys or reuses, in order: ${releaseKinds.join(', ')} (the card releases only where the network declares Bridge's SpenderFactory)`
 
 /** Applies every verified release in the result files to releases.ts. */
 function registryMain(files: string[], body: string | undefined) {
@@ -1026,15 +1090,15 @@ export async function main(
     registryMain(positionals.slice(1), values.body)
     return
   }
-  const [network, selection] = positionals
-  if (!network || !selection || positionals.length !== 2) throw new Error(usage)
+  const [network] = positionals
+  if (!network || positionals.length !== 1) throw new Error(usage)
   await runReleases({
     network,
-    kinds: releaseKindsFor(selection),
+    kinds: networkReleaseKinds(network),
     broadcast: values.broadcast,
     output: values.output,
     deploy: (kind) =>
-      deployFactoryRelease({
+      deployRelease({
         network,
         kind,
         broadcast: values.broadcast,
@@ -1042,7 +1106,7 @@ export async function main(
         root,
         environment: process.env,
       }),
-    retry: 'docs/deployment/deployment.md#shared-factory-releases',
+    retry: 'docs/deployment/deployment.md#releases',
   })
 }
 

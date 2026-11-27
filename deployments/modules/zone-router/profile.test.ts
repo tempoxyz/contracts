@@ -6,7 +6,7 @@ import {
   zeroAddress,
   zeroHash,
 } from 'viem'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import {
   authoredProfile,
@@ -14,9 +14,30 @@ import {
   deploymentIntentHash,
   parseEarnDeploymentProfile as parseProfile,
 } from '../../core/profile.js'
-import { zoneRouterConstructorArgs, zoneRouterMode, zoneRouterModeHash } from './profile.js'
+import {
+  zoneRouterConstructorArgs,
+  zoneRouterFactory,
+  zoneRouterMode,
+  zoneRouterModeHash,
+} from './profile.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as `0x${string}`
+
+/** The ZoneRouterFactory the mocked registry records on moderato; mainnet keeps the real (empty) entry. */
+const releasedFactory = vi.hoisted(() => '0x0000000000000000000000000000000000000fac' as const)
+
+vi.mock('../../core/releases.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/releases.js')>()
+  return {
+    ...actual,
+    releasedContract: vi.fn(
+      (chainId: number, key: Parameters<typeof actual.releasedContract>[1]) =>
+        chainId === 42431 && key === 'zoneRouterFactory'
+          ? releasedFactory
+          : actual.releasedContract(chainId, key),
+    ),
+  }
+})
 const customerId = `0x${'c'.repeat(64)}` as const
 
 const base = {
@@ -40,7 +61,6 @@ const presets = {
     ops: ['deposit', 'redeem', 'spend'],
     earn: { privateAsset: address('a'), pool: address('b'), customerId },
     spenders: [address('5e771e')],
-    factory: address('fac'),
   },
 }
 
@@ -170,9 +190,9 @@ describe('zoneRouter profile', () => {
       'zoneRouter.earn.earnVault is not supported',
     ],
     [
-      'a zero factory',
-      { ...presets.card, factory: zeroAddress },
-      'zoneRouter.factory must be a nonzero address',
+      'a factory, which only the release deploys',
+      { ...presets.card, factory: address('fac') },
+      'zoneRouter.factory is not supported',
     ],
   ])('rejects %s', (_, zoneRouter, message) => {
     expect(() => parse(zoneRouter)).toThrow(message)
@@ -219,25 +239,35 @@ describe('zoneRouter profile', () => {
     })
   })
 
-  test('keeps the intent of profiles without a router and isolates the factory from the mode', () => {
+  test('keeps the intent of profiles without a router and hashes no factory component', () => {
     const without = componentDeploymentIntentHashes(parse())
-    expect(without).toMatchObject({ zoneRouterFactory: null, zoneRouter: null })
+    expect(without).toMatchObject({ zoneRouter: null })
+    expect(without).not.toHaveProperty('zoneRouterFactory')
 
     const card = parse(presets.card)
     const moreSpenders = parse({ ...presets.card, spenders: [address('5e771e')] })
     const cardHashes = componentDeploymentIntentHashes(card)
     const changed = componentDeploymentIntentHashes(moreSpenders)
-    expect(cardHashes.zoneRouterFactory).toEqual(expect.any(String))
-    expect(changed.zoneRouterFactory).toBe(cardHashes.zoneRouterFactory)
+    expect(cardHashes).not.toHaveProperty('zoneRouterFactory')
+    expect(cardHashes.zoneRouter).toEqual(expect.any(String))
     expect(changed.zoneRouter).not.toBe(cardHashes.zoneRouter)
     expect(changed.core).toBe(without.core)
     expect(deploymentIntentHash(card)).not.toBe(deploymentIntentHash(moreSpenders))
+  })
 
-    // A named factory is the profile's, not a component the lifecycle deploys.
-    const named = componentDeploymentIntentHashes(
-      parse({ ...presets.card, factory: address('fac') }),
+  test('deploys through the recorded factory, else the released one', () => {
+    const card = parse(presets.card)
+    expect(zoneRouterFactory(card, outputs)).toBe(outputs.zoneRouterFactory)
+    expect(zoneRouterFactory(card, { earnVault: outputs.earnVault })).toBe(releasedFactory)
+  })
+
+  test('fails naming the release when the registry has no ZoneRouterFactory', () => {
+    const mainnet = parseProfile(
+      { ...base, chainId: 4217, zoneRouter: presets.card },
+      { deployer: address('3'), factories: { earn: address('4'), erc4626Engine: address('1') } },
     )
-    expect(named.zoneRouterFactory).toBeNull()
-    expect(named.zoneRouter).not.toBe(cardHashes.zoneRouter)
+    expect(() => zoneRouterFactory(mainnet, {})).toThrow(
+      'No zoneRouterFactory release on mainnet; run pnpm release mainnet and record its registry entry first',
+    )
   })
 })

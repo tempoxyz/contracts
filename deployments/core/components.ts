@@ -22,6 +22,13 @@ export const intentComponents = ['core', 'engine', ...peripheryComponents] as co
 
 export type IntentComponent = 'core' | 'engine' | PeripheryComponent
 
+/**
+ * Intent components no profile configures any more (`zoneRouterFactory`: routers deploy through the
+ * released ZoneRouterFactory). A record written before keeps its hash, which owns nothing; the next
+ * record written omits it.
+ */
+export const retiredComponents = ['zoneRouterFactory'] as const
+
 /** Compiles only when no slice address names an undeclared intent component. */
 function declaredComponents<Undeclared>(_none: [Undeclared] extends [never] ? true : never) {}
 declaredComponents<Exclude<SliceAddressComponent, IntentComponent>>(true)

@@ -23,7 +23,7 @@ FACTORY=0x... OUT=reports/tempo-spend.json \
 
 The script creates the handler through the CREATE2 deployer
 (`0x4e59b44847b379578588920cA78FbF26c0B4956C`) with the salt of Earn's
-[shared factory releases](../../deployment/deployment.md#shared-factory-releases)
+[releases](../../deployment/deployment.md#releases)
 ([`BridgeRelease`](../../../script/spend/bridge/deploy/BridgeRelease.sol)), so the same build for the same
 factory lands at the same address whoever deploys it. A handler already at that address is reused
 and nothing is sent. The address follows this repository's build: a change to the
@@ -121,7 +121,7 @@ It deploys the program as in
 [step 2](#2-deploy-the-program-once-per-program), or reuses it, then, through the
 `ZoneRouterFactory`, a [`ZoneRouter`](../../zone/zone-router.md) whose mode allows only Spend,
 only from `ZONE_ID`, with the program as its only spender. `ROUTER_FACTORY` is the release
-`ZoneRouterFactory` ([Zone router releases](../../deployment/deployment.md#zone-router-releases)): the
+`ZoneRouterFactory` ([releases](../../deployment/deployment.md#releases)): the
 program takes `spendFrom` only from that factory's routers that list it, and the release `CardFactory`,
 and so the program's address, follow it. The script never deploys a factory of its own. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `provider`,
 `program`, `routerFactory` and `router`, and is written only with `--broadcast`.
@@ -129,8 +129,8 @@ and so the program's address, follow it. The script never deploys a factory of i
 For a hosted program, deploy the program from its deployment profile's `cards`
 ([Deploying from a profile](#deploying-from-a-profile)) or with step 2's script. The router can then come from an Earn
 deployment profile's `zoneRouter`, which lists the program and deploys, verifies and records the
-router with `pnpm earn deploy`, or from Zone Router Release's `zoneRouter`. Through the same factory,
-either adopts a router this script already deployed for that mode
+router with `pnpm earn deploy`. Through the same factory, it adopts a router this script already
+deployed for that mode
 ([Zone router deployment](../../zone/zone-router.md#deployment)).
 
 The router has no owner and needs no configuration. The Zone admin checks the router with the
@@ -261,14 +261,16 @@ Tempo deploys the same contracts from `main` with the
 addresses as the scripts above, so either reuses what the other deployed:
 
 - the "TS" handler for each network's Bridge `SpenderFactory`, declared once in
-  `bridgeSpenderFactories` ([`deployments/modules/cards/profile.ts`](../../../deployments/modules/cards/profile.ts)),
+  `bridgeSpenderFactories` ([`deployments/core/releases.ts`](../../../deployments/core/releases.ts)),
   and the `CardFactory` for the release `ZoneRouterFactory`, by the
-  [card releases](../../deployment/deployment.md#card-releases) (`pnpm card-release <network> all`);
+  [release](../../deployment/deployment.md#releases) (`pnpm release <network>`), which records them
+  in the release registry;
 - each program, from the deployment profile that declares it in
   [`cards`](../../../profiles/README.md#card-programs) (`{ "provider": "bridge", "spenderId": "0x..." }`):
-  `pnpm earn deploy` runs step 2 for the network's factory and the release `ZoneRouterFactory`,
-  then verifies, source-verifies and records the program in the profile's `deployment.json`. A program
-  Bridge already deployed with step 2 is adopted, with the transaction that created it.
+  `pnpm earn deploy` creates its `BridgeProvider` and its `CardSpender` through the registry's
+  `CardFactory`, as step 2 does, never the `CardFactory` itself, then verifies, source-verifies and
+  records the provider and the program in the profile's `deployment.json`. A program Bridge already
+  deployed with step 2 is adopted, with the transaction that created it.
 
 Neither ever submits a call on Bridge's factory. The profile's `enable-card-program` step checks that
 `TS` runs this release's handler and serves the program, and until then hands off the calls of

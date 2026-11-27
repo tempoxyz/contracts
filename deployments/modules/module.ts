@@ -279,6 +279,12 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
      * recorded runtime differs, reconciliation replaces it as if the step's intent had changed.
      */
     replaceOnCodeChange?(profile: EarnDeploymentProfile): boolean
+    /**
+     * Set for a contract created through the CREATE2 deployer at its release address, whoever created
+     * it: the address commits to its creation code and constructor arguments, so it is source verified
+     * without a creation transaction, and one that already exists is reused without one.
+     */
+    release?: true
   }
 }
 

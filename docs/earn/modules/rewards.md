@@ -210,15 +210,14 @@ deployments.
 
 ### Rewards factory releases
 
-Tempo API installs reward periphery through the rewards factory and pins each hosted network's
-release itself; profiles never use it.
-
-To release one, deploy from a reviewed `main` checkout through the `earnRewardsFactory(uint256)`
-entry point of `script/earn/deploy/DeployFactoryRelease.s.sol` (plain `CREATE`, run like the other
-[shared factory releases](../../deployment/deployment.md#shared-factory-releases)), source-verify it,
-and require its onchain runtime-code hash to match the local `deployedBytecode` hash with the
-verifier reporting `exact_match`. Then configure its address and onchain runtime-code hash in Tempo
-API; compiler metadata differs between source revisions, so chains need not share one hash.
+Tempo API installs reward periphery through the rewards factory; profiles never use it.
+[`pnpm release`](../../deployment/deployment.md#releases) deploys it at its release address through
+the `earnRewardsFactory(uint256)` entry point of `script/earn/deploy/DeployFactoryRelease.s.sol`,
+source-verifies it, and records it under `rewards` in the release registry. Tempo API pins each hosted
+network's factory itself: require its onchain runtime-code hash to match the local
+`deployedBytecode` hash with the verifier reporting `exact_match`, then configure its address and
+onchain runtime-code hash in Tempo API; compiler metadata differs between source revisions, so chains
+need not share one hash.
 
 ## Failure modes and limitations
 

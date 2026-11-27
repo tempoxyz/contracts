@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 
-import { planFactoryRelease, predictRelease } from '@tempoxyz/contracts/deployments/node'
+import { planRelease, predictRelease } from '@tempoxyz/contracts/deployments/node'
 import type { Hex } from 'viem'
 
 import * as Config from './config.js'
@@ -333,7 +333,7 @@ it.skipIf(!nativeAvailable)(
   'real Forge ignores poisoned checkout artifacts while retaining them for their owner',
   () => {
     vi.stubEnv('PATH', nativeEnvironment.PATH)
-    const plan = planFactoryRelease('core', 0)
+    const plan = planRelease('core', 0)
     mkdirSync(resolve(Config.foundryRoot, 'src/earn/core'), { recursive: true })
     writeFileSync(
       resolve(Config.foundryRoot, 'foundry.toml'),
