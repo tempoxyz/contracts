@@ -218,9 +218,9 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
   The
   benchmark and hosted E2E jobs receive `TEMPO_API_KEY`; the hosted E2E job also receives the shared `DEPLOYER_PRIVATE_KEY` and the environment's `END_USER_PRIVATE_KEY`, but no RPC
-  credentials; the deploy, Zone router release and Bridge release jobs receive the shared
+  credentials; the deploy job receives the shared
   `DEPLOYER_PRIVATE_KEY` and RPC credentials from the `factory-release-<network>` environment, which
-  accepts only `main` and has no required reviewer, so dispatching a release is its approval. Those
+  accepts only `main` and has no required reviewer, so dispatching Deploy is its approval. Those
   secrets reach only the steps that send or run cases, and the deploy and hosted E2E jobs restore and
   save no cache (`.github/actions/setup` with `caches: 'false'`): they download solar and check it
   against `solar-releases.json`, build from scratch, keep no Foundry RPC cache (`~/.foundry/cache`), and

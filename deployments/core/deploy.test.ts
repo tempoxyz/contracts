@@ -954,7 +954,7 @@ describe('released router factory across mode changes', () => {
     },
   )
 
-  test('tolerates a record carrying the retired zoneRouterFactory component hash', async () => {
+  test('tolerates a record carrying the retired zoneRouterFactory component and its action', async () => {
     const fixture = pendingSourceDeployment({ retainedRouter: true })
     try {
       const record = structuredClone(fixture.record)
@@ -968,12 +968,14 @@ describe('released router factory across mode changes', () => {
       publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, verified)
       const legacy = JSON.parse(readFileSync(fixture.recordPath, 'utf8'))
       legacy.componentDeploymentIntentHashes.zoneRouterFactory = '0'.repeat(64)
+      // Its receipt is one the record already holds, so the deployment block it bounds is unchanged.
+      legacy.actions['deploy-zone-router-factory'] = verified.actions['deploy-core']
       writeFileSync(fixture.recordPath, JSON.stringify(legacy))
       expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
       const retained = fixture.read()
       expect(retained.addresses.zoneRouter).toBe(record.addresses.zoneRouter)
       expect(retained.addresses.zoneRouterFactory).toBe(fixture.releasedFactory)
-      expect(retained.actions).toEqual(verified.actions)
+      expect(retained.actions).toMatchObject(verified.actions)
       fixture.assertNoBroadcast()
     } finally {
       fixture.cleanup()

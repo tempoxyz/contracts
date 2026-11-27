@@ -88,11 +88,15 @@ jobs:
           arguments=("$NETWORK" --output "$RUNNER_TEMP/release.json")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
           if [[ "$RESUBMIT" == 'true' ]]; then arguments+=(--resubmit-verification); fi
-          pnpm release "${arguments[@]}"
-          # The profiles below read the shared contracts from this checkout's registry, so record verified releases first.
-          if [[ "$BROADCAST" == 'true' ]]; then
+          status=0
+          pnpm release "${arguments[@]}" || status=$?
+          # The profiles below read the shared contracts from this checkout's registry, so record verified
+          # releases first. After a failure the result still holds the releases before it, which the
+          # registry records; the failed and unverified ones it skips.
+          if [[ "$BROADCAST" == 'true' && -f "$RUNNER_TEMP/release.json" ]]; then
             pnpm release registry "$RUNNER_TEMP/release.json" --body "$RUNNER_TEMP/registry-pr.md"
           fi
+          exit "$status"
 
       - name: List the network's profiles
         id: profiles
@@ -170,7 +174,8 @@ jobs:
           key: deploy-resume-${{ matrix.network }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The registry and record changes this network made, for the record job to apply. Networks change
-      # separate releases.ts blocks and profiles, so their patches apply together.
+      # separate releases.ts entries and profiles; one line of context keeps the last key of one
+      # network's entry and the first of the next apart, so their patches apply together.
       - name: Collect the network's changes
         if: ${{ always() && inputs.broadcast }}
         # Named by network, so the record job finds them whether the download nests artifacts or not.
@@ -180,7 +185,7 @@ jobs:
           # A new profile's first record is untracked: intent-to-add puts it in the diff. Only untracked
           # records, so an empty match or a deleted record never fails or hides a change.
           git ls-files -z --others --exclude-standard -- 'profiles/*/deployment.json' | xargs -0 -r git add --intent-to-add --
-          git diff --binary -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes/changes-$NETWORK.patch"
+          git diff --binary --unified=1 -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes/changes-$NETWORK.patch"
           if [[ -f "$RUNNER_TEMP/registry-pr.md" ]]; then cp "$RUNNER_TEMP/registry-pr.md" "$RUNNER_TEMP/changes/registry-pr-$NETWORK.md"; fi
 
       - name: Summarize

@@ -11,6 +11,7 @@ import {
   hasRuntimeCode,
   intentComponents,
   peripheryComponents,
+  retiredActions,
   retiredComponents,
   type DeploymentAddressKey,
   type IntentComponent,
@@ -257,7 +258,11 @@ export function parseEarnDeploymentRecord(
   const plannedActions = new Set<string>(deploymentActions(profile).map((action) => action.id))
   const actions: EarnDeploymentRecord['actions'] = {}
   for (const [key, entry] of Object.entries(object(source.actions, `${path}.actions`))) {
-    if (!plannedActions.has(key) && !changedAction(key)) {
+    if (
+      !plannedActions.has(key) &&
+      !changedAction(key) &&
+      !(retiredActions as readonly string[]).includes(key)
+    ) {
       throw new Error(`${path}.actions.${key} is not used by profile ${profile.id}`)
     }
     actions[key as EarnDeploymentActionId] = parseCompletedAction(entry, `${path}.actions.${key}`)

@@ -208,7 +208,10 @@ describe('Zone router steps', () => {
       })
     }
     expect(step.intent).toEqual(['zoneRouter'])
-    expect(step.source?.replaceOnCodeChange?.(card)).toBe(true)
+    // A Spend router stays on its recorded factory, which its spenders bind; an Earn-only one is replaced.
+    expect(step.source?.replaceOnCodeChange?.(card)).toBe(false)
+    const earnOnly = { ...card, zoneRouter: { ...card.zoneRouter!, spenders: undefined } }
+    expect(step.source?.replaceOnCodeChange?.(earnOnly)).toBe(true)
     expect(step.source?.constructorArgs(card, outputs)).toBe(
       zoneRouterConstructorArgs(zoneRouterMode(card, outputs)),
     )

@@ -101,6 +101,9 @@ describe('deploy workflow', () => {
     expect(steps.every((index) => index > 0)).toBe(true)
     expect([...steps].sort((a, b) => a - b)).toEqual(steps)
     expect(workflow).toContain('arguments=("$NETWORK" --output "$RUNNER_TEMP/release.json")')
+    // A failed release still records the verified releases before it, then fails the step.
+    expect(workflow).toContain('pnpm release "${arguments[@]}" || status=$?')
+    expect(workflow).toContain('exit "$status"')
     // The release result reaches the summary and the artifact.
     expect(workflow).toContain('if [[ -f "$RUNNER_TEMP/release.json" ]]; then')
     expect(workflow).toContain('${{ runner.temp }}/release.json')
@@ -192,6 +195,43 @@ describe('deploy record', () => {
       expect(run(record, 'git diff --cached --name-only').trim()).toBe(
         'profiles/new/deployment.json',
       )
+    })
+  })
+
+  test("applies both networks' registry changes, even at the edges of their entries", () => {
+    withRepos((repo, root) => {
+      const registry = readFileSync(new URL('./releases.ts', import.meta.url), 'utf8')
+      const networks = ['moderato', 'mainnet'].map((name) => {
+        const dir = repo(name)
+        writeFileSync(join(dir, 'deployments/core/releases.ts'), registry)
+        run(dir, 'git add -A && git commit -qm registry')
+        return dir
+      })
+      const record = repo('record')
+      writeFileSync(join(record, 'deployments/core/releases.ts'), registry)
+      run(record, 'git add -A && git commit -qm registry')
+      // The last key of mainnet's entry and the first of moderato's, two lines apart.
+      const edit = (dir: string, from: RegExp, to: string) =>
+        writeFileSync(
+          join(dir, 'deployments/core/releases.ts'),
+          readFileSync(join(dir, 'deployments/core/releases.ts'), 'utf8').replace(from, to),
+        )
+      edit(
+        networks[0]!,
+        /(moderato: \{\n {4}earn: getAddress\(')[^']+/,
+        `$1${'0x'.padEnd(42, 'a')}`,
+      )
+      edit(
+        networks[1]!,
+        /(mainnet: \{[\s\S]*? {4}tempoSpend: )null/,
+        `$1getAddress('${'0x'.padEnd(42, 'b')}')`,
+      )
+      for (const [index, dir] of networks.entries())
+        collect(dir, join(root, `changes-${index}.patch`))
+      for (const index of [0, 1]) apply(record, join(root, `changes-${index}.patch`))
+      const recorded = readFileSync(join(record, 'deployments/core/releases.ts'), 'utf8')
+      expect(recorded).toContain(`earn: getAddress('${'0x'.padEnd(42, 'a')}')`)
+      expect(recorded).toContain(`tempoSpend: getAddress('${'0x'.padEnd(42, 'b')}')`)
     })
   })
 

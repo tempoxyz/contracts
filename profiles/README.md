@@ -121,7 +121,9 @@ protected-item and three-slot rules.
 The factory is the network's release `ZoneRouterFactory`, read from the
 [release registry](../docs/deployment/deployment.md#releases) and recorded as `zoneRouterFactory`; a
 profile never deploys one, and deploying fails on a network whose registry has none. A router built
-from other code is replaced through the release factory of the current build.
+from other code is replaced through the release factory of the current build, except a router with
+`spend`, which stays on its recorded factory because its spenders take spends only from that
+factory's routers.
 
 A different mode is a new router at a new address, which the Zone must admit again
 ([lifecycle](../docs/zone/zone-router.md#deployment)).

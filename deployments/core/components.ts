@@ -29,6 +29,13 @@ export type IntentComponent = 'core' | 'engine' | PeripheryComponent
  */
 export const retiredComponents = ['zoneRouterFactory'] as const
 
+/**
+ * Deployment steps no profile runs any more, with the retired component they recorded. A record
+ * written before keeps their completed actions, whose receipts still bound its deployment block; they
+ * own nothing, and the next record written omits them.
+ */
+export const retiredActions = ['deploy-zone-router-factory'] as const
+
 /** Compiles only when no slice address names an undeclared intent component. */
 function declaredComponents<Undeclared>(_none: [Undeclared] extends [never] ? true : never) {}
 declaredComponents<Exclude<SliceAddressComponent, IntentComponent>>(true)

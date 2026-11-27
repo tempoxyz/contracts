@@ -100,8 +100,9 @@ export const deployZoneRouter = defineFoundryStep({
     constructorArgs: (profile, outputs) =>
       zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
     // Ownerless and immutable: a router built from other code is replaced through the released
-    // factory of this checkout's build.
-    replaceOnCodeChange: () => true,
+    // factory of this checkout's build. A Spend router is kept on its recorded factory: its spenders,
+    // such as the profile's own card program, take spends only from that factory's routers.
+    replaceOnCodeChange: (profile) => !profile.zoneRouter?.spenders?.length,
   },
   async satisfied(client, profile, outputs) {
     if (!(await deployedOutputs(client, outputs, ['zoneRouter']))) return false
