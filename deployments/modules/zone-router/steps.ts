@@ -56,10 +56,10 @@ const hasZoneRouter = (profile: EarnDeploymentProfile) => profile.zoneRouter !==
 
 /**
  * The check a person makes before any grant: the lifecycle grants with its own keys only a router and
- * factory that run this checkout's build, so a handoff with a signer configured means they do not.
+ * factory that run this checkout's build, and a person granting instead must confirm their sources.
  */
 const sourceCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
-  `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} and router ${requiredOutput(outputs, 'zoneRouter')} are source verified as src/zone/ZoneRouterFactory.sol and src/zone/ZoneRouter.sol; with a configured signer, this handoff means they do not run this checkout's build. `
+  `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} and router ${requiredOutput(outputs, 'zoneRouter')} are source verified as src/zone/ZoneRouterFactory.sol and src/zone/ZoneRouter.sol (the lifecycle grants with its own keys only a router and factory of this checkout's build). `
 
 /** The router's conversion pool, when its Earn binding converts the private asset. */
 const routerPool = (profile: EarnDeploymentProfile) => profile.zoneRouter?.earn?.pool

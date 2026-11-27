@@ -371,7 +371,7 @@ describe('Zone router steps', () => {
       `setGateway(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
     )
     // The released factory source-verifies with its release, so no handoff asks a person to check it.
-    // A handoff with a signer configured means the router or factory is not this build's.
+    // A person granting confirms the factory and router sources first.
     expect(handoff).toContain(
       `First confirm that ZoneRouterFactory ${outputs.zoneRouterFactory} and router ${outputs.zoneRouter} are source verified`,
     )
@@ -516,7 +516,7 @@ describe('Zone router steps', () => {
     expect(handoff).toContain(
       `Confirm ZoneRouterFactory ${zoneRouterFactory(cardAndEarn, outputs)}.isRouter(${outputs.zoneRouter}) and the mode in its RouterDeployed event, and verify the router's canonical implementation`,
     )
-    // A handoff with a signer configured means the router or factory is not this build's.
+    // A person granting confirms the factory and router sources first.
     expect(handoff).toContain(
       `First confirm that ZoneRouterFactory ${outputs.zoneRouterFactory} and router ${outputs.zoneRouter} are source verified`,
     )
@@ -589,7 +589,7 @@ describe('Zone router steps', () => {
     expect(handoff).toContain(
       `confirm ZoneRouterFactory ${outputs.zoneRouterFactory}.isRouter(${outputs.zoneRouter})`,
     )
-    // A handoff with a signer configured means the router or factory is not this build's.
+    // A person granting confirms the factory and router sources first.
     expect(handoff).toContain(
       `First confirm that ZoneRouterFactory ${outputs.zoneRouterFactory} and router ${outputs.zoneRouter} are source verified`,
     )
