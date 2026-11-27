@@ -15,7 +15,7 @@
   "dependencies": {
     "@tempoxyz/contracts": "workspace:*",
     "prool": "0.3.0",
-    "testcontainers": "12.2.1",
+    "testcontainers": "12.2.2",
     "viem": "catalog:"
   },
   "devDependencies": {
