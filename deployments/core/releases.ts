@@ -117,13 +117,18 @@ export function resolveEarnFactoryRelease(chainId: number): EarnFactoryRelease {
 export function releasedContract(chainId: number, key: SingletonReleaseKey): Address {
   const environment = hostedEnvironment(chainId)
   const address = environment ? canonicalReleases[environment.id][key] : undefined
-  if (!address)
-    throw new Error(
-      environment
-        ? `No ${key} release on ${environment.id}; run pnpm release ${environment.id} and record its registry entry first`
-        : `No release registry for chain ${chainId}`,
-    )
+  if (!address) throw missingRelease(chainId, key)
   return address
+}
+
+/** The error for a shared contract a chain's registry entry lacks, naming the command that releases it. */
+export function missingRelease(chainId: number, key: SingletonReleaseKey) {
+  const environment = hostedEnvironment(chainId)
+  return new Error(
+    environment
+      ? `No ${key} release on ${environment.id}; run pnpm release ${environment.id} and record its registry entry first`
+      : `No release registry for chain ${chainId}`,
+  )
 }
 
 /** Whether two releases name exactly the same factories. */

@@ -45,7 +45,12 @@ vi.mock(import('../../core/releases.js'), async (original) => {
     releasedContract: vi.fn((chainId, key) =>
       chainId === 42431 && key === 'zoneRouterFactory'
         ? releasedFactory
-        : actual.releasedContract(chainId, key),
+        : // Mainnet releases nothing, whatever the committed registry holds.
+          chainId === 4217
+          ? (() => {
+              throw actual.missingRelease(chainId, key)
+            })()
+          : actual.releasedContract(chainId, key),
     ),
   }
 })

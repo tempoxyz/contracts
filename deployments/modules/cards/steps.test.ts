@@ -34,13 +34,17 @@ import {
   requireHandlerCode,
 } from './steps.js'
 
-/** The registry entry the tests release on mainnet; filled in once the fixtures exist. */
+/**
+ * The registry entry the tests release on mainnet, filled in once the fixtures exist; moderato
+ * releases nothing, whatever the committed registry holds.
+ */
 const registry = vi.hoisted(() => ({}) as Partial<Record<SingletonReleaseKey, `0x${string}`>>)
 vi.mock(import('../../core/releases.js'), async (original) => {
   const actual = await original()
   return {
     ...actual,
     releasedContract: vi.fn((chainId: number, key: SingletonReleaseKey) => {
+      if (chainId === 42431) throw actual.missingRelease(chainId, key)
       const released = chainId === 4217 ? registry[key] : undefined
       return released ?? actual.releasedContract(chainId, key)
     }),
