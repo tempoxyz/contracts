@@ -440,7 +440,7 @@ contract EarnVault is IEarnVault {
     }
 
     /// @custom:ensures msg.sender == old(operator)
-    /// @custom:ensures distributor != address(0) ==> _specProtectsDistributorFee(config, _distributorFee)
+    /// @custom:ensures old(distributor) != address(0) ==> _specProtectsDistributorFee(config, old(_distributorFee))
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) && engine == old(engine)
     function setFeeConfig(FeeConfig calldata config) external override nonReentrant returns (uint64 configId) {
         if (msg.sender != operator) revert NotOperator();
@@ -1653,6 +1653,7 @@ contract EarnVault is IEarnVault {
     /// @dev The conversion anchor. Between calls it is exact; within a call, read it before managed backing changes,
     ///      since a live anchor's engine-share side is the managed count.
     /// @custom:ensures engineShares_ == _specAnchorEngine() && earnShares == _specAnchorEarn()
+    /// @custom:succeeds-if _anchorEarnShares != EMPTY_ANCHOR || _earnShareDecimals <= 77
     function _anchor() internal view returns (uint256 engineShares_, uint256 earnShares) {
         earnShares = _anchorEarnShares;
         if (earnShares == EMPTY_ANCHOR) return (rewardRateBaseline(), _earnShareScale());
@@ -2008,7 +2009,7 @@ contract EarnVault is IEarnVault {
     /// @notice Contributions may raise the normalized rate to at most MAX_REWARD_RATE_MULTIPLIER times the baseline.
     /// @custom:requires rewardRateBaseline() != 0 && _specAnchorEarn() != 0
     /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER
-    /// @custom:succeeds-if _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER && rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER <= type(uint256).max
+    /// @custom:succeeds-if _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER && rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER <= type(uint256).max && _earnShareDecimals <= 77
     function _requireRewardRateWithinLimit() internal view {
         uint256 baseline = rewardRateBaseline();
         (uint256 anchorEngine, uint256 anchorEarn) = _anchor();
