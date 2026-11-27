@@ -1271,6 +1271,7 @@ contract EarnFees is IEarnFees {
     }
 
     /// @custom:ensures result == ((packed >> (slot * REMAINDER_BITS)) & REMAINDER_MASK)
+    /// @custom:succeeds-if slot <= MAX_FIXED_FEE_RECIPIENTS
     function _remainderAt(uint256 packed, uint256 slot) internal pure returns (uint256) {
         return (packed >> (slot * REMAINDER_BITS)) & REMAINDER_MASK;
     }

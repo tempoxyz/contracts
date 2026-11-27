@@ -132,7 +132,6 @@ contract EarnFactory {
     /// @custom:ensures deployedEarnShareSalt == computeEarnShareSalt(params)
     /// @custom:ensures deployedTransferPolicyId == _effectiveTransferPolicyId(params.transferPolicyId)
     /// @custom:ensures deployedTransferPolicyId != 0
-    /// Not proved: the verifier does not finish this function within its time limit.
     function deploy(DeployParams calldata params)
         external
         returns (address earnShare, EarnVault earnVault, EarnFees earnFees)
@@ -140,7 +139,6 @@ contract EarnFactory {
         _validateParams(params);
 
         address asset = IEarnEngine(params.engine).asset();
-        /// @custom:ghost deployedAsset = asset
         if (asset == address(0)) revert ZeroAddress();
         string memory engineName = IEarnEngine(params.engine).name();
         string memory engineSymbol = IEarnEngine(params.engine).symbol();
@@ -155,8 +153,6 @@ contract EarnFactory {
         bytes32 earnShareSalt = _earnShareSalt(
             params.deploymentId, params.engine, params.owner, controlConfigHash, feeConfigHash, transferPolicyId
         );
-        /// @custom:ghost deployedEarnShareSalt = earnShareSalt
-        /// @custom:ghost deployedTransferPolicyId = transferPolicyId
         address predictedEarnShare = ITIP20Factory(tip20Factory).getTokenAddress(address(this), earnShareSalt);
         if (predictedEarnShare.code.length != 0) revert EarnShareAlreadyExists(predictedEarnShare);
 
@@ -186,6 +182,10 @@ contract EarnFactory {
         _setTransferPolicy(earnShare, transferPolicyId);
         _relinquishShareAdmin(earnShare);
 
+        // Recorded after the last external call, which may change any ghost.
+        /// @custom:ghost deployedAsset = asset
+        /// @custom:ghost deployedEarnShareSalt = earnShareSalt
+        /// @custom:ghost deployedTransferPolicyId = transferPolicyId
         emit EarnStackDeployed(
             address(earnVault),
             earnShare,
