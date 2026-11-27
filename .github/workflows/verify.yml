@@ -81,8 +81,8 @@ jobs:
           FOUNDRY_SOLC: ${{ github.workspace }}/solar-solc
         run: forge test --brutalize --match-contract SingleZoneEarnRouterAbiFuzzTest --fuzz-runs 4096 -vv
 
-  # Rebuilds the committed DirectPropAMM fixture from its pinned public source, tempoxyz/tempo-propamm,
-  # which it fetches without a token.
+  # Rebuilds the committed DirectPropAMM and ManagedDirectPropAMM fixtures from their pinned public source,
+  # tempoxyz/tempo-propamm, which it fetches without a token.
   propamm-fixture:
     name: PropAMM fixture
     runs-on: ubuntu-latest
@@ -104,6 +104,9 @@ jobs:
 
       - name: Check the fixture matches the pinned build
         run: test/earn/fixtures/propamm/update.sh --check
+
+      - name: Check the managed pool fixture matches the pinned build
+        run: test/earn/fixtures/propamm/update.sh --check --source managed.source.json
 
   symbolic:
     name: Symbolic

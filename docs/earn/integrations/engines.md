@@ -17,6 +17,10 @@ read each kind's properties from the shared
 `HoldEngine` has no registry kind, so the lifecycle, localnet and E2E cannot deploy it; it is
 deployed by hand ([Hold deployment](../modules/hold.md#deployment)).
 
+`ManagedPropAMMEngine`, over one pair of a ManagedDirectPropAMM pool and settling every swap
+through that pool's Settler, is not deployed and is not a
+registered kind; the [PropAMM page](../modules/propamm.md#managed-pools) owns it.
+
 ## Engine contract
 
 [`IEarnEngine`](../../../src/interfaces/earn/engines/IEarnEngine.sol) defines single-client custody and
