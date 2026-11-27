@@ -197,7 +197,7 @@ export const authorizeZoneRouter = defineAuthorityStep({
       dependencies,
       required(routerPool(options.profile), 'Zone router conversion pool'),
       requiredOutput(options.outputs, 'zoneRouter'),
-      (client) => requireModeProvenance(client, options.profile, options.outputs),
+      (client) => modeProvenanceMatches(client, options.profile, options.outputs),
     ),
 })
 
@@ -287,7 +287,8 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const router = requiredOutput(options.outputs, 'zoneRouter')
     if (await zoneCallbackGatewayRegistered(administrator.client, portal, router))
       return { transactions: [] }
-    await requireModeProvenance(administrator.client, options.profile, options.outputs)
+    if (!(await modeProvenanceMatches(administrator.client, options.profile, options.outputs)))
+      return undefined
     return administrator.send(
       await portalRoleCalls(administrator.client, portal, router, 'callbackGateway'),
     )
@@ -330,7 +331,8 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     const router = requiredOutput(options.outputs, 'zoneRouter')
     if (await zoneGatewayDepositsAdmitted(administrator.client, portal, router))
       return { transactions: [] }
-    await requireModeProvenance(administrator.client, options.profile, options.outputs)
+    if (!(await modeProvenanceMatches(administrator.client, options.profile, options.outputs)))
+      return undefined
     return administrator.send(
       await portalRoleCalls(administrator.client, portal, router, 'account'),
     )
@@ -438,6 +440,24 @@ export async function zoneRouterBound(
       throw error
     },
   )
+}
+
+/**
+ * Whether the factory and router run this build, as the lifecycle's own grants require. A Spend router
+ * kept on an older build is not an error: its grants are handed to a person, who checks its source.
+ */
+async function modeProvenanceMatches(
+  client: Pick<ChainClient, 'call' | 'getCode'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+) {
+  try {
+    await requireModeProvenance(client, profile, outputs)
+    return true
+  } catch (error) {
+    if ((error as Error | undefined)?.name === 'ProvenanceMismatchError') return false
+    throw error
+  }
 }
 
 /** Both the restored factory and its mode must be canonical before a Zone administrator grants access. */

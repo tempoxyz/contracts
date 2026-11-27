@@ -1396,6 +1396,8 @@ function pendingSourceDeployment({
             sequencerAt: address('b3'),
           }
           if (functionName in zoneReads) return zoneReads[functionName]
+          // The mode's spender binds the released factory.
+          if (functionName === 'ROUTER_FACTORY') return releasedFactory
           if (target === releasedFactory || target === otherFactory)
             return functionName === 'isRouter'
               ? args?.[0] !== zeroAddress

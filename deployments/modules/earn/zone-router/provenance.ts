@@ -41,9 +41,14 @@ export async function requireRouterProvenance(
     expected.data === '0x' ||
     stripMetadata(actual.toLowerCase() as Hex) !== stripMetadata(expected.data.toLowerCase() as Hex)
   )
-    throw new Error(
+    throw new ProvenanceMismatchError(
       `Router admission requires canonical implementation provenance for ${options.address} (${options.contract})`,
     )
+}
+
+/** The deployed runtime is not this build's; matched by `name`, so callers need not import the class. */
+export class ProvenanceMismatchError extends Error {
+  override name = 'ProvenanceMismatchError'
 }
 
 function compiledCreation(options: Contract): Hex {

@@ -31,6 +31,7 @@ import { accessMemberContracts, deploymentStep, executeAvailableAuthority } from
 import type { ChainClient, FoundryStep } from '../module.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { zoneRouterModeModule } from './index.js'
+import { routerFactoryRelease } from './releases.js'
 import { zoneRouterConstructorArgs, zoneRouterFactory, zoneRouterMode } from './profile.js'
 import { zoneRouterSeedPlan } from './seeds.js'
 
@@ -53,6 +54,8 @@ vi.mock(import('../../core/releases.js'), async (original) => {
 vi.mock(import('./releases.js'), async () => {
   const { getAddress } = await import('viem')
   return {
+    // This build's release ZoneRouterFactory is the registry's, unless a test says otherwise.
+    routerFactoryRelease: { address: () => releasedFactory },
     spenderReleases: {
       cardFactory: () => getAddress(`0x${'cafac'.padStart(40, '0')}`),
       sendSpender: ({ customerId }) => getAddress(`0x${customerId.slice(-40)}`),
@@ -466,6 +469,40 @@ describe('Zone router steps', () => {
     expect(sendTransactionSync).not.toHaveBeenCalled()
   })
 
+  test.each(['register-zone-router-gateway'] as const)(
+    '%s hands a router from an older build to a person rather than failing',
+    async (id) => {
+      const mismatch = Object.assign(new Error('Router admission requires canonical provenance'), {
+        name: 'ProvenanceMismatchError',
+      })
+      vi.mocked(requireRouterProvenance).mockRejectedValueOnce(mismatch)
+      const sendTransactionSync = vi.fn()
+      const runtime = {
+        authorityClient: (() => ({
+          account: privateKeyToAccount(authorityKey),
+          chain: { id: 42431 },
+          readContract: async ({ functionName }: { functionName: string }) =>
+            functionName === 'admin' ? authorityAccount : false,
+          sendTransactionSync,
+        })) as never,
+        fundFromFaucet: vi.fn() as never,
+      }
+      await expect(
+        executeAvailableAuthority(
+          {
+            action: { id },
+            environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+            outputs,
+            profile: cardAndEarn,
+            rpcUrl: 'https://rpc.invalid',
+          },
+          runtime,
+        ),
+      ).resolves.toBeUndefined()
+      expect(sendTransactionSync).not.toHaveBeenCalled()
+    },
+  )
+
   test('admits a router on its conversion pool with the deployer key once authority is proven', () => {
     const step = deploymentStep('authorize-zone-router')
     if (step.execution !== 'authority') throw new Error('expected an authority step')
@@ -729,10 +766,19 @@ describe('Zone router preflight', () => {
     ).resolves.toBeUndefined()
   })
 
-  test('refuses spenders whose routers would come from another factory', async () => {
+  test('deploys a Spend router through the factory its spenders bind, even one the registry no longer names', async () => {
+    const older = address('01d0')
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(older), card),
+    ).resolves.toBeUndefined()
+  })
+
+  test('refuses spenders bound to a factory other than the recorded one, or to none', async () => {
     const other = address('bad0')
-    await expect(zoneRouterModeModule.preflight!(preflightChain(other), card)).rejects.toThrow(
-      `zoneRouter.spenders[0] ${spender} takes spendFrom only from routers of ZoneRouterFactory ${other}, not the router's ${releasedFactory}`,
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(other), card, outputs),
+    ).rejects.toThrow(
+      `zoneRouter.spenders[0] ${spender} takes spendFrom only from routers of ZoneRouterFactory ${other}, not the router's ${outputs.zoneRouterFactory}`,
     )
     await expect(zoneRouterModeModule.preflight!(preflightChain(undefined), card)).rejects.toThrow(
       'reports no ROUTER_FACTORY',
@@ -752,13 +798,36 @@ describe('Zone router preflight', () => {
         args: [zeroAddress],
       }),
     )
-    const unreleased = profileWith(
-      { zoneId: 7, ops: ['spend'], spenders: [spender] },
-      { chainId: 4217 },
-    )
-    await expect(
-      zoneRouterModeModule.preflight!(preflightChain(releasedFactory), unreleased),
-    ).rejects.toThrow('No zoneRouterFactory release on mainnet; run pnpm release mainnet')
+  })
+
+  test("requires a released factory taken from the registry to be this build's", async () => {
+    const earnOnly = profileWith({
+      zoneId: 7,
+      ops: ['deposit'],
+      earn: { privateAsset: address('a5') },
+    })
+    const build = vi.spyOn(routerFactoryRelease, 'address').mockReturnValue(address('b17d'))
+    try {
+      await expect(
+        zoneRouterModeModule.preflight!(preflightChain(undefined), earnOnly),
+      ).rejects.toThrow(
+        `Released ZoneRouterFactory ${releasedFactory} is not this build's ${address('b17d')}; run pnpm release`,
+      )
+      build.mockReturnValue(releasedFactory)
+      // This build's factory passes on to the remaining checks.
+      await expect(
+        zoneRouterModeModule.preflight!(preflightChain(undefined), earnOnly),
+      ).rejects.not.toThrow('is not this build')
+      const unreleased = profileWith(
+        { zoneId: 7, ops: ['deposit'], earn: { privateAsset: address('a5') } },
+        { chainId: 4217 },
+      )
+      await expect(
+        zoneRouterModeModule.preflight!(preflightChain(undefined), unreleased),
+      ).rejects.toThrow('No zoneRouterFactory release on mainnet; run pnpm release mainnet')
+    } finally {
+      build.mockRestore()
+    }
   })
 })
 
