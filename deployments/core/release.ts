@@ -39,7 +39,7 @@ import {
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
 import { redactRpcCredentials } from '../chain/rpc-credentials.js'
-import { configuredRpcTransport, rpcConfiguration } from '../chain/runtime.js'
+import { configuredRpcTransport, rpcConfiguration, sanitizedDiagnostic } from '../chain/runtime.js'
 import { hostedEnvironment, hostedEnvironments, type HostedEnvironmentId } from '../chain/tempo.js'
 import { engineFactories } from '../modules/earn/engines/index.js'
 import {
@@ -76,6 +76,13 @@ export const releaseKinds = [
 ] as const
 
 export type ReleaseKind = (typeof releaseKinds)[number]
+
+/** The releases that are or bind the ZoneRouterFactory, which the registry records only together. */
+const routerFactoryReleases: readonly ReleaseKind[] = [
+  'zoneRouterFactory',
+  'sendSpender',
+  'cardFactory',
+]
 
 /** The card releases, deployed only where the network declares Bridge's SpenderFactory. */
 const cardReleaseKinds: readonly ReleaseKind[] = ['cardFactory', 'tempoSpend']
@@ -980,6 +987,30 @@ export function registryUpdates(
       })
     }
   }
+  // The router factory and the contracts bound to it change only together, so the registry never
+  // pairs a new ZoneRouterFactory with a SendSpender or CardFactory bound to the old one.
+  for (const run of runs) {
+    const group = networkReleaseKinds(run.network).filter((kind) =>
+      (routerFactoryReleases as readonly string[]).includes(kind),
+    )
+    const recorded = new Set(
+      updates.filter((update) => update.network === run.network).map((update) => update.kind),
+    )
+    if (group.every((kind) => recorded.has(kind)) || group.every((kind) => !recorded.has(kind)))
+      continue
+    for (const kind of group) {
+      if (!recorded.has(kind)) continue
+      skipped.push({
+        network: run.network,
+        kind,
+        reason: `recorded only with ${group.join(', ')}, which bind one ZoneRouterFactory`,
+      })
+    }
+    const kept = updates.filter(
+      (update) => update.network !== run.network || !group.includes(update.kind as ReleaseKind),
+    )
+    updates.splice(0, updates.length, ...kept)
+  }
   return { updates, skipped }
 }
 
@@ -1114,9 +1145,8 @@ if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   try {
     await main()
   } catch (error) {
-    // Plain errors name the failed check; any other error keeps its stack.
-    if (!(error instanceof Error) || error.constructor !== Error) throw error
-    console.error(error.message)
+    // Print only the message, without configured RPC URLs or credentials: RPC errors carry them.
+    console.error(redactRpcCredentials(sanitizedDiagnostic(error), '', process.env))
     process.exitCode = 1
   }
 }

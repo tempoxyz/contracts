@@ -602,6 +602,20 @@ describe('registry updates', () => {
     ])
   })
 
+  test('records the router factory only together with the releases bound to it', () => {
+    const partial = run('moderato', {
+      releases: [release('moderato', 'core'), release('moderato', 'zoneRouterFactory')],
+      failed: { kind: 'sendSpender' },
+    })
+    const { updates, skipped } = registry([partial])
+    expect(updates.map((update) => update.key)).toEqual(['earn'])
+    expect(skipped).toContainEqual({
+      network: 'moderato',
+      kind: 'zoneRouterFactory',
+      reason: 'recorded only with zoneRouterFactory, sendSpender, which bind one ZoneRouterFactory',
+    })
+  })
+
   test('skips a release with an unverified contract, a dry run, and a failed release', () => {
     const unverified = run('moderato')
     unverified.releases[0]!.contracts[1]!.match = null

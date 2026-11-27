@@ -238,9 +238,17 @@ async function spenderFactories(
       : await profileCardProgram(client, profile)
   const forthcoming = (spender: Address) =>
     cardProgram !== undefined && getAddress(spender) === cardProgram.program
+  // A deployed spender answers for itself; only a card program not deployed yet takes the binding its
+  // release CardFactory gives it.
+  const deployed = async (spender: Address) => {
+    const code = await client.getCode({ address: spender })
+    return Boolean(code && code !== '0x')
+  }
   const factories = await Promise.all(
-    (profile.zoneRouter?.spenders ?? []).map((spender) =>
-      forthcoming(spender) ? cardProgram!.routerFactory : spenderRouterFactory(client, spender),
+    (profile.zoneRouter?.spenders ?? []).map(async (spender) =>
+      forthcoming(spender) && !(await deployed(spender))
+        ? cardProgram!.routerFactory
+        : spenderRouterFactory(client, spender),
     ),
   )
   return { forthcoming, factories }
