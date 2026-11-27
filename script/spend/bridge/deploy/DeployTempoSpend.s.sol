@@ -12,8 +12,8 @@ import { SpenderTempoSpend } from "../../../../src/spend/providers/bridge/Spende
 import { BridgeRelease } from "./BridgeRelease.sol";
 
 /// @notice Deploys the "TS" handler against Bridge's existing SpenderFactory at its deterministic
-///         address (`BridgeRelease`), or reuses the one already there, so Bridge and Tempo's Bridge
-///         Release workflow land on the same handler. Registering it is an
+///         address (`BridgeRelease`), or reuses the one already there, so Bridge and Tempo's card
+///         release (`pnpm card-release`) land on the same handler. Registering it is an
 ///         admin call behind Bridge's timelock, and gating it is a governance call, so the script
 ///         writes both as calldata to OUT for Bridge to submit rather than sending them. The gate
 ///         call is written only while the prefix is `Disabled` with no handler, its state before

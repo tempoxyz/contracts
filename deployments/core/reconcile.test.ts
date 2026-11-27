@@ -221,6 +221,7 @@ describe('Earn deployment lifecycle', () => {
       core: _core,
       zone: _zone,
       zoneRouter: _zoneRouter,
+      cards: _cards,
       ...authoredProfile
     } = profile
     const authored = {

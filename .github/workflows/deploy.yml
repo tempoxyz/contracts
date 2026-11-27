@@ -1,7 +1,7 @@
 name: Deploy
 
 # Deploys the whole hosted stack from main, one network at a time: the shared factory releases, the
-# ZoneRouterFactory, then every committed profile on that network. Every step reconciles toward
+# ZoneRouterFactory, the card releases, then every committed profile on that network. Every step reconciles toward
 # what main describes and reuses what is already deployed, so rerunning it after a success changes
 # nothing and rerunning it after a failure resumes. A broadcast run then pushes a branch, and opens
 # its pull request, with any release registry entry or profile record it changed.
@@ -57,7 +57,7 @@ jobs:
       BROADCAST: ${{ inputs.broadcast }}
       # Only with broadcast: the commands refuse it otherwise.
       RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}
-    # The keys and RPC credentials reach only the three deploy steps, and this job restores no
+    # The keys and RPC credentials reach only the four deploy steps, and this job restores no
     # dependency or build cache, so nothing another job wrote runs beside them.
     steps:
       - name: Secure runner
@@ -102,6 +102,21 @@ jobs:
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
           if [[ "$RESUBMIT" == 'true' ]]; then arguments+=(--resubmit-verification); fi
           pnpm zone-router-release "${arguments[@]}"
+
+      # The CardFactory and Bridge's "TS" handler, on a network that declares Bridge's SpenderFactory
+      # (deployments/modules/cards/profile.ts); elsewhere nothing. Profiles' card programs trust both.
+      - name: Deploy the card releases
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          arguments=("$NETWORK" all --output "$RUNNER_TEMP/card-release.json")
+          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
+          if [[ "$RESUBMIT" == 'true' ]]; then arguments+=(--resubmit-verification); fi
+          pnpm card-release "${arguments[@]}"
 
       - name: List the network's profiles
         id: profiles
@@ -150,11 +165,12 @@ jobs:
               continue
             fi
             output="$RUNNER_TEMP/profile-output.txt"
-            # Forge shares stdout; the result is the last top-level JSON object printed.
+            # Forge shares stdout; the result is the last top-level JSON object printed. Multi-line
+            # handoffs fold to one line for the summary table row and the error annotation.
             deploy=(deploy "$path" --json)
             if [[ "$RESUBMIT" == 'true' ]]; then deploy+=(--resubmit-verification); fi
             if pnpm earn "${deploy[@]}" | tee "$output"; then
-              state=$(awk '/^\{$/ { result = "" } { result = result $0 "\n" } END { printf "%s", result }' "$output" | jq -r '.state + (if .instructions then ": " + .instructions else "" end)')
+              state=$(awk '/^\{$/ { result = "" } { result = result $0 "\n" } END { printf "%s", result }' "$output" | jq -r '.state + (if .instructions then ": " + .instructions else "" end) | gsub("\\s*\\n\\s*"; " ")')
             else
               state='failed; see its output'
             fi
@@ -196,7 +212,7 @@ jobs:
         run: |
           {
             echo "## Stack on ${NETWORK} · $([[ "$BROADCAST" == 'true' ]] && echo broadcast || echo dry run) · ${GITHUB_SHA::7}"
-            for result in "$RUNNER_TEMP/factory-release.json" "$RUNNER_TEMP/zone-router-release.json"; do
+            for result in "$RUNNER_TEMP/factory-release.json" "$RUNNER_TEMP/zone-router-release.json" "$RUNNER_TEMP/card-release.json"; do
               [[ -f "$result" ]] || continue
               echo
               echo '| Release | Contract | Address | Transaction | Source match |'
@@ -219,6 +235,7 @@ jobs:
           path: |
             ${{ runner.temp }}/factory-release.json
             ${{ runner.temp }}/zone-router-release.json
+            ${{ runner.temp }}/card-release.json
             ${{ runner.temp }}/changes/
           if-no-files-found: ignore
 

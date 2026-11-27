@@ -201,7 +201,7 @@ codehash matches its released build.
 | `CardSpender` | A destination its provider authorizes (Rain collateral, a Bridge settlement wallet) | `abi.encode(CardSpend)` | The provider                             |
 
 `SendSpender` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
-a Bridge program's `CardSpender` by [Bridge Release](../deployment/deployment.md#bridge-releases), each at a
+a Bridge program's `CardSpender` by a profile's [`cards`](../../profiles/README.md#card-programs), each at a
 deterministic address, and listed in a profile's `zoneRouter.spenders`.
 
 ### `ISpender`

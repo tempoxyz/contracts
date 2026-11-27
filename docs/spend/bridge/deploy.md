@@ -5,7 +5,7 @@ each program its `CardSpender` with its `BridgeProvider`, deployed by a shared `
 program's Zone router. None has an owner, and a program has no pause of its own. The
 handler, the `CardFactory` and each `BridgeProvider` land at deterministic release addresses, and a
 program at the `CardFactory`'s CREATE2 address for its `spenderId` and provider, so Bridge
-can deploy them with the scripts below or Tempo with the [Bridge Release workflow](#deploying-from-ci),
+can deploy them with the scripts below or Tempo [from a deployment profile](#deploying-from-a-profile),
 and either lands on the same contracts. Every factory change is a role-gated call, so the scripts
 write those calls as calldata for the multisig that holds each role, instead of sending them.
 
@@ -126,8 +126,8 @@ program takes `spendFrom` only from that factory's routers that list it, and the
 and so the program's address, follow it. The script never deploys a factory of its own. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `provider`,
 `program`, `routerFactory` and `router`, and is written only with `--broadcast`.
 
-For a hosted program, release the program with the Bridge Release workflow's `bridgeProgram`
-([Deploying from CI](#deploying-from-ci)) or step 2's script. The router can then come from an Earn
+For a hosted program, deploy the program from its deployment profile's `cards`
+([Deploying from a profile](#deploying-from-a-profile)) or with step 2's script. The router can then come from an Earn
 deployment profile's `zoneRouter`, which lists the program and deploys, verifies and records the
 router with `pnpm earn deploy`, or from Zone Router Release's `zoneRouter`. Through the same factory,
 either adopts a router this script already deployed for that mode
@@ -254,41 +254,30 @@ step 6 is done, the settlement wallet's balance included: a callback that runs o
 after Bridge approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
 measure the program's own vault first.
 
-## Deploying from CI
+## Deploying from a profile
 
-The **Bridge Release** workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
-deploys the handler (`tempoSpend`) or a program (`bridgeProgram`) from `main`, with the same scripts
-and so at the same deterministic addresses as a deploy by Bridge. Choose the network (Moderato or
-mainnet), the contract, Bridge's factory, for a program its `spenderId` and `routerFactory` (the Zone router
-release's `ZoneRouterFactory`, whose routers alone may call it), and whether to broadcast; without broadcast Forge only simulates. It runs
-[`script/spend/bridge/deploy/release.sh`](../../../script/spend/bridge/deploy/release.sh)
-(`release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]`; `bridgeProgram` reads
-`FACTORY`, `SPENDER_ID` and `ROUTER_FACTORY`), which:
+Tempo deploys the same contracts from `main` with the
+[Deploy workflow](../../deployment/deployment.md#deploying-the-hosted-stack-from-ci), at the same
+addresses as the scripts above, so either reuses what the other deployed:
 
-- refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
-  `tempo_forkSchedule`;
-- authenticates the router factory through the deployment script even when all release addresses
-  already exist, before any broadcast or source verification;
-- predicts each address from the locally compiled creation code and attributes creation only
-  from matching successful receipts. `CardFactory` and `BridgeProvider` come from the CREATE2
-  deployer; a program requires the matching `ProgramDeployed` event from `CardFactory.deploy`.
-  A concurrent creation or successful call with no creation event is reuse, with `created: false`
-  and no creation transaction hash passed to source verification;
-- after a broadcast, source-verifies each one on Tempo's verifier (`https://contracts.tempo.xyz`),
-  including a contract that already existed, and fails if the verifier has no source match. A
-  program's release verifies all three.
+- the "TS" handler for each network's Bridge `SpenderFactory`, declared once in
+  `bridgeSpenderFactories` ([`deployments/modules/cards/profile.ts`](../../../deployments/modules/cards/profile.ts)),
+  and the `CardFactory` for the release `ZoneRouterFactory`, by the
+  [card releases](../../deployment/deployment.md#card-releases) (`pnpm card-release <network> all`);
+- each program, from the deployment profile that declares it in
+  [`cards`](../../../profiles/README.md#card-programs) (`{ "provider": "bridge", "spenderId": "0x..." }`):
+  `pnpm earn deploy` runs step 2 for the network's factory and the release `ZoneRouterFactory`,
+  then verifies, source-verifies and records the program in the profile's `deployment.json`. A program
+  Bridge already deployed with step 2 is adopted, with the transaction that created it.
 
-The job summary lists the address, the transaction and the source match, and the admin and
-governance calls above for Bridge to submit; the `bridge-release-<network>-<contract>-<attempt>`
-artifact holds the result and Forge's broadcast files. The workflow never submits those calls:
-registering and gating stay with Bridge's roles. A program needs no factory call; list it in the
-Zone's Spend-mode router.
+Neither ever submits a call on Bridge's factory. The profile's `enable-card-program` step checks that
+`TS` runs this release's handler and serves the program, and until then hands off the calls of
+[step 1](#1-deploy-the-handler-once) and [step 3](#3-turn-it-on-for-a-program)'s allowlist call, with
+their calldata, in the Deploy summary. Allowing a vault (`UV`) stays with step 3's script.
 
-Dispatching it from `main` is the approval: the job runs in the `factory-release-<network>`
-environment, which has no required reviewer and accepts only `main`, with the deployer key
-and RPC credentials of the [factory releases](../../deployment/deployment.md#releasing-from-ci), and
-shares their `hosted-contracts-<network>` queue. The handler, `CardFactory`, provider and program are
-ownerless, so the key only pays fees. The script also runs locally, for example against a dev node:
+[`release.sh`](../../../script/spend/bridge/deploy/release.sh) still runs step 1 or step 2 locally,
+with the same address and receipt checks, for example against a dev node as
+[`smoke.sh`](../../../script/spend/bridge/smoke.sh) does:
 
 ```bash
 FACTORY=0x... DEPLOYER_PRIVATE_KEY=0x... TEMPO_RPC_URL=http://127.0.0.1:8545 \

@@ -15,6 +15,7 @@ import { stackAddress } from '../../core/stack.js'
 import { transferPolicyId } from '../earn/access-policy/profile.js'
 import { preflightRouterRoute } from '../earn/zone-router/index.js'
 import { inspectRouterReadiness } from '../earn/zone-router/inspection.js'
+import { profileCardProgram } from '../cards/steps.js'
 import { requiredOutput, type CapabilityModule, type CapabilityReadiness } from '../module.js'
 import {
   inspectZoneRouterBinding,
@@ -222,9 +223,22 @@ async function preflightZoneRouter(
 ) {
   const router = profile.zoneRouter
   if (!router) return
+  // The card program deploys before the router: the recorded one, which a failed broadcast may have
+  // left without code, or else the one the release CardFactory predicts.
+  const cardProgram =
+    outputs.cardProgram && outputs.cardRouterFactory
+      ? {
+          program: getAddress(outputs.cardProgram),
+          routerFactory: getAddress(outputs.cardRouterFactory),
+        }
+      : await profileCardProgram(client, profile)
+  const forthcoming = (spender: Address) =>
+    cardProgram !== undefined && getAddress(spender) === cardProgram.program
   await requireCode(client, {
     ...Object.fromEntries(
-      (router.spenders ?? []).map((spender, index) => [`spender ${index}`, spender]),
+      (router.spenders ?? [])
+        .map((spender, index) => [`spender ${index}`, spender] as const)
+        .filter(([, spender]) => !forthcoming(spender)),
     ),
     ...(router.factory ? { ZoneRouterFactory: router.factory } : {}),
   } as Record<string, Address>)
@@ -239,7 +253,9 @@ async function preflightZoneRouter(
   // A spender refuses `spendFrom` from any other factory's router, so a router through a factory this
   // deployment creates could never spend through a spender already bound to another.
   for (const [index, spender] of (router.spenders ?? []).entries()) {
-    const bound = await spenderRouterFactory(client, spender)
+    const bound = forthcoming(spender)
+      ? cardProgram!.routerFactory
+      : await spenderRouterFactory(client, spender)
     const path = `zoneRouter.spenders[${index}] ${spender}`
     if (!bound) throw new Error(`${path} reports no ROUTER_FACTORY`)
     if (!router.factory) {

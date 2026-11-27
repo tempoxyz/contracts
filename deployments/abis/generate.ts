@@ -74,18 +74,30 @@ const routerContracts = ['ZoneRouter', 'ZoneRouterFactory', 'SendSpender'].map(
   (contract) => [`${camel(contract)}Abi`, `out/${contract}.sol/${contract}.json`] as const,
 )
 
+/** The card program contracts the deployment lifecycle reads, and Bridge's `SpenderFactory`. */
+const cardContracts = [
+  ...['CardFactory', 'CardSpender', 'BridgeProvider'].map(
+    (contract) => [`${camel(contract)}Abi`, `out/${contract}.sol/${contract}.json`] as const,
+  ),
+  ['bridgeSpenderFactoryAbi', 'out/SpenderFactory.sol/SpenderFactory.json'] as const,
+]
+
 /**
  * Foundry scripts called with typed calldata; only their state-changing entry points are exported.
- * Every `<Name>.s.sol` deployment and fixture script, Earn's and then the router's, exports
+ * Every `<Name>.s.sol` deployment and fixture script, Earn's, the router's, then card spend's, exports
  * `<name>ScriptAbi`.
  */
-const scripts = ['script/earn/deploy/', 'script/earn/local/', 'script/zone/deploy/'].flatMap(
-  (directory) =>
-    solidityFiles(directory, '.s.sol').map(({ file }) => {
-      const script = file.slice(0, -'.s.sol'.length)
-      const name = `${script[0]!.toLowerCase()}${script.slice(1)}ScriptAbi`
-      return [name, `out/${file}/${script}Script.json`] as const
-    }),
+const scripts = [
+  'script/earn/deploy/',
+  'script/earn/local/',
+  'script/zone/deploy/',
+  'script/spend/bridge/lifecycle/',
+].flatMap((directory) =>
+  solidityFiles(directory, '.s.sol').map(({ file }) => {
+    const script = file.slice(0, -'.s.sol'.length)
+    const name = `${script[0]!.toLowerCase()}${script.slice(1)}ScriptAbi`
+    return [name, `out/${file}/${script}Script.json`] as const
+  }),
 )
 
 /**
@@ -152,6 +164,7 @@ const body = [
   ...contractAbis,
   ['earnEngineBindingAbi', engineBindingAbi] as const,
   ...routerContracts.map(([name, path]) => [name, readAbi(path)] as const),
+  ...cardContracts.map(([name, path]) => [name, readAbi(path)] as const),
   ...scripts.map(([name, path]) => {
     const entryPoints = readAbi(path).filter(
       (item) => item.type === 'function' && item.stateMutability === 'nonpayable',

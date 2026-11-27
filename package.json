@@ -11,6 +11,7 @@
     "earn": "pnpm --filter @tempoxyz/contracts exec tsx core/cli.ts",
     "factory-release": "pnpm --filter @tempoxyz/contracts exec tsx core/factory-release.ts",
     "zone-router-release": "pnpm --filter @tempoxyz/contracts exec tsx core/zone-router-release.ts",
+    "card-release": "pnpm --filter @tempoxyz/contracts exec tsx modules/cards/release.ts",
     "coverage": "mkdir -p out/coverage && FOUNDRY_PROFILE=coverage forge coverage --no-match-coverage '^script/' --report-file out/coverage/lcov.info",
     "e2e:benchmark": "pnpm --filter e2e exec tsx harness/benchmark.ts",
     "e2e:profile": "pnpm --filter e2e exec tsx harness/cli.ts --earn-file",

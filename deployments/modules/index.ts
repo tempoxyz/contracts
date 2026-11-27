@@ -7,6 +7,7 @@ import {
 } from '../core/components.js'
 import { unique } from '../core/parse.js'
 import type { EarnDeploymentProfile } from '../core/profile.js'
+import { deployCardProgram, enableCardProgram } from './cards/steps.js'
 import { accessPolicyModule } from './earn/access-policy/index.js'
 import { validateAccess } from './earn/access-policy/steps.js'
 import { bindCore, deployCore } from './earn/core/steps.js'
@@ -52,6 +53,8 @@ const steps = [
   deployCore,
   bindCore,
   deployRouter,
+  // Before the Zone router, whose spenders may include the profile's own card program.
+  deployCardProgram,
   deployZoneRouterFactory,
   deployZoneRouter,
   deployMerkleDistributor,
@@ -64,6 +67,7 @@ const steps = [
   enableZoneRouterTokens,
   registerZoneRouterGateway,
   admitZoneRouterAccount,
+  enableCardProgram,
   seedZoneRouter,
   seedEngine,
 ] as const

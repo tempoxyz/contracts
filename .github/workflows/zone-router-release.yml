@@ -3,7 +3,7 @@ name: Zone Router Release
 # Deploys one of the Zone router's parameterized ownerless contracts (src/zone/) from main on the
 # hosted networks: a SendSpender (bound to the release ZoneRouterFactory unless its parameters name another
 # factory; the release deploys that factory first when it is missing), or a ZoneRouter its factory creates. A Bridge card program's CardSpender
-# releases with the Bridge Release (bridge-release.yml). Each lands at its deterministic address, and
+# deploys from its profile's cards in deploy.yml. Each lands at its deterministic address, and
 # one already there is reused. After a broadcast it is source verified on
 # Tempo's verifier. These contracts are in no release registry, so nothing is recorded afterwards; the
 # job summary and artifact hold the addresses. The shared factory releases and the ZoneRouterFactory deploy

@@ -181,8 +181,8 @@ The router and the `ISpender` interface `CardSpender` implements come from `src/
 - [`docs/zone/zone-router.md`](../../zone/zone-router.md): the [Zone router](../../zone/README.md)
   private spends go through.
 - [`docs/spend/bridge/deploy.md`](deploy.md): deploying into the spender factory, and the calls
-  each role submits. The handler lands at a deterministic address, so Bridge running the deploy
-  scripts and Tempo's Bridge Release workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
+  each role submits. Every contract lands at a deterministic address, so Bridge running the deploy
+  scripts and Tempo's [Deploy workflow](../../deployment/deployment.md#deploying-the-hosted-stack-from-ci)
   deploy the same contracts: the handler and each program's `CardFactory`, `BridgeProvider` and
   `CardSpender`.
 - [`docs/spend/bridge/bridge-integration.md`](bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.

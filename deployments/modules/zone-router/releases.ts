@@ -26,7 +26,7 @@ const releaseSalt = keccak256(stringToBytes('tempoxyz/earn shared factory releas
  * A contract's creation code as its release builds it. Every profile compiles with the same
  * settings, so the Zone router's `deploy` build and the spend release script's default one agree.
  */
-function creationCode(contract: string) {
+export function releaseCreationCode(contract: string) {
   const cached = creationCodes.get(contract)
   if (cached) return cached
   const bytecode = execFileSync('forge', ['inspect', contract, 'bytecode'], {
@@ -55,14 +55,14 @@ export const spenderReleases: SpenderReleases = {
   cardFactory: (routerFactory) =>
     releaseAddress(
       concatHex([
-        creationCode('src/spend/CardFactory.sol:CardFactory'),
+        releaseCreationCode('src/spend/CardFactory.sol:CardFactory'),
         encodeAbiParameters(parseAbiParameters('address'), [routerFactory]),
       ]),
     ),
   sendSpender: ({ routerFactory, convertVault, pool, customerId }) =>
     releaseAddress(
       concatHex([
-        creationCode('src/zone/spenders/SendSpender.sol:SendSpender'),
+        releaseCreationCode('src/zone/spenders/SendSpender.sol:SendSpender'),
         encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
           routerFactory,
           convertVault,

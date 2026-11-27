@@ -76,7 +76,8 @@ describe('creationEvent', () => {
         step.execution === 'foundry' &&
         step.id !== 'deploy-core' &&
         step.id !== 'deploy-engine' &&
-        step.id !== 'deploy-zone-router',
+        step.id !== 'deploy-zone-router' &&
+        step.id !== 'deploy-card-program',
     )
     expect(direct.length).toBeGreaterThan(0)
     for (const step of direct) {

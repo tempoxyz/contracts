@@ -2,7 +2,7 @@
 
 This runbook owns the shared deployment lifecycle: the `pnpm earn` commands, the generated record,
 verification, authority handoffs, and the hosted contract releases: Earn's shared factory releases,
-the [Zone router releases](#zone-router-releases), and the [Bridge releases](#bridge-releases). The authored profile JSON is in
+the [Zone router releases](#zone-router-releases), and the [card releases](#card-releases). The authored profile JSON is in
 [deployment profiles](../../profiles/README.md), each capability's own steps in its
 [module page](../earn/README.md#capability-modules), engine installation in
 [yield engines](../earn/integrations/engines.md#installation), and package exports in the
@@ -290,7 +290,7 @@ The record (`version: 4`) contains:
 - `deploymentId`, `deployer`, `owner`, and `factories`, the resolved shared factory release;
 - `deploymentIntentHash` and `componentDeploymentIntentHashes`, one hash per intent component
   (`core`, `engine`, `zone`, `targetYield`, `boostRewards`, `zoneRouterFactory`, `zoneRouter`,
-  `null` when not configured; a record written before a component existed omits it);
+  `cards`, `null` when not configured; a record written before a component existed omits it);
 - `target`: the chain ID, L1 genesis hash, and each capability's external identity, such as the
   Zone's ID, chain ID, Portal, and Messenger;
 - `addresses`, `assetDecimals`, and `deploymentBlock`, the earliest block of a deployment
@@ -304,7 +304,7 @@ Changing intent, replacing code, or restoring state across a regenesis therefore
 reuse stale addresses. Publication is strict: the record must contain exactly the addresses and
 completed deployment steps derived from the plan. Activation steps are not recorded; their state is
 always read from the pool and Portal. Changing an optional component (`zone`, `targetYield`,
-`boostRewards`, `zoneRouterFactory`, `zoneRouter`) redeploys only that component's contracts and republishes the record; core and
+`boostRewards`, `zoneRouterFactory`, `zoneRouter`, `cards`) redeploys only that component's contracts and republishes the record; core and
 engine creation intent never changes in place, so a record whose `core` or `engine` hash differs
 from the profile is refused. The immutable Zone routers and the `ZoneRouterFactory` are also replaced,
 with the steps that configure them, when a recorded one's runtime differs from this checkout's build
@@ -481,26 +481,28 @@ including one defaulted from the deployer; emergency guardian; async janitor; ev
 fee distributor) and every role a capability slice declares through `privilegedPrincipals`, such as
 the reward treasury.
 
-| Step                             | Phase      | Authority (signer)                                                   | Owner                                                                           |
-| -------------------------------- | ---------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `deploy-engine`                  | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Factory-provisioned engine](../earn/modules/erc4626-engine.md#deployment)      |
-| `deploy-core`                    | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
-| `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
-| `deploy-router`                  | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
-| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
-| `deploy-merkle-distributor`      | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
-| `validate-access`                | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
-| `deploy-contribution-controller` | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
-| `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone/zone-router.md#deployment)                                |
-| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
-| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
-| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
-| `seed-zone-router`               | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Zone router](../zone/zone-router.md#deployment)                                |
-| `seed-engine`                    | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Gas residue after deployment](#gas-residue-after-deployment)                   |
+| Step                             | Phase      | Authority (signer)                                                                     | Owner                                                                           |
+| -------------------------------- | ---------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `deploy-engine`                  | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                                                      | [Factory-provisioned engine](../earn/modules/erc4626-engine.md#deployment)      |
+| `deploy-core`                    | deployment | deployer                                                                               | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
+| `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)                   | Bind EarnVault and atomically transfer the engine to the configured final owner |
+| `deploy-router`                  | deployment | deployer                                                                               | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `deploy-card-program`            | deployment | deployer                                                                               | [Card releases](#card-releases)                                                 |
+| `deploy-zone-router-factory`     | deployment | deployer                                                                               | [Zone router](../zone/zone-router.md#deployment)                                |
+| `deploy-zone-router`             | deployment | deployer                                                                               | [Zone router](../zone/zone-router.md#deployment)                                |
+| `deploy-merkle-distributor`      | deployment | deployer                                                                               | [Rewards](../earn/modules/rewards.md#installation)                              |
+| `validate-access`                | deployment | deployer                                                                               | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
+| `deploy-contribution-controller` | deployment | deployer                                                                               | [Rewards](../earn/modules/rewards.md#installation)                              |
+| `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)                     | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                                   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                                   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)                     | [Zone router](../zone/zone-router.md#deployment)                                |
+| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                                   | [Zone router](../zone/zone-router.md#deployment)                                |
+| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                                   | [Zone router](../zone/zone-router.md#deployment)                                |
+| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                                   | [Zone router](../zone/zone-router.md#deployment)                                |
+| `enable-card-program`            | activation | Bridge `SpenderFactory` admin and governance (never configured here; always a handoff) | [Bridge deploy runbook](../spend/bridge/deploy.md#deploying-from-a-profile)     |
+| `seed-zone-router`               | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                                      | [Zone router](../zone/zone-router.md#deployment)                                |
+| `seed-engine`                    | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                                      | [Gas residue after deployment](#gas-residue-after-deployment)                   |
 
 Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives another authority
 key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive
@@ -610,7 +612,7 @@ The [Deploy workflow](#deploying-the-hosted-stack-from-ci) releases every shared
 as its first step on each network, running `pnpm factory-release <network> all [--broadcast]`
 ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)); `all` is the core release and every engine factory the registry names. The command
 runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning deploys only what changed. Locally, `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just that one. For invalid verifier entries, `--resubmit-verification` requires `--broadcast` and follows the same [repair limits](#source-verification); it does not force redeployment. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. The command refuses
-Zone router and Bridge releases, which release separately ([Zone router releases](#zone-router-releases), [Bridge releases](#bridge-releases)).
+Zone router and card releases, which release separately ([Zone router releases](#zone-router-releases), [card releases](#card-releases)).
 
 Registry inputs must contain the complete expected contract set at addresses independently derived
 from the local compile and CREATE2 parameters, with only `match` or `exact_match` source results.
@@ -624,7 +626,7 @@ After a broadcast, `pnpm factory-release registry` records every release whose c
 verified in [`releases.ts`](../../deployments/core/releases.ts), and the Deploy workflow's record pull
 request carries it, so the registry changes only through review.
 
-Every CI deployment (Deploy, Zone Router Release, Bridge Release) runs in the
+Every CI deployment (Deploy, Zone Router Release) runs in the
 `factory-release-<network>` environment, which has no required reviewer, accepts only `main`, and
 holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
 `TEMPO_RPC_PASSWORD`), so dispatching from `main` is the approval. Both environments hold the one
@@ -653,7 +655,8 @@ FOUNDRY_PROFILE=deploy forge script \
 
 The **Deploy** workflow ([`deploy.yml`](../../.github/workflows/deploy.yml)) brings a hosted
 network to what `main` describes in one dispatch: every shared factory release (`pnpm factory-release
-<network> all`), the Zone router release's `ZoneRouterFactory`, then `pnpm earn deploy` for every
+<network> all`), the Zone router release's `ZoneRouterFactory`, the [card releases](#card-releases)
+(`pnpm card-release <network> all`), then `pnpm earn deploy` for every
 committed profile on that network (`pnpm profiles --network <network>`, which lists them without
 checking records, so a record a release outdated is redeployed rather than refused). Choose
 `both` (Moderato, then mainnet only after Moderato succeeds), one network, and whether to broadcast
@@ -673,8 +676,8 @@ the release workflows, with the same deployer key, which is also every committed
 dispatching from `main` is the only approval. After a broadcast, the `record` job pushes a
 `deploy/<run>-<attempt>` branch with every source-verified release in `releases.ts` and every changed
 `deployment.json`, from every network that got that far, and opens its pull request (or links it in the
-summary when Actions may not open one). A `SendSpender`, a `ZoneRouter` outside a profile, and Bridge
-releases take per-deployment parameters and stay with their own workflows.
+summary when Actions may not open one). A `SendSpender` and a `ZoneRouter` outside a profile take
+per-deployment parameters and stay with Zone Router Release.
 
 A change that bumps a release a committed profile uses leaves that profile's record stale until the
 stack is redeployed: dispatch Deploy after it merges, then merge the record pull request.
@@ -711,7 +714,7 @@ and parameters, with the run's `broadcast/` receipts. As with Deploy, the dispat
 the approval: each network's job runs in the same `factory-release-<network>` environment, with no
 required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
 pays fees. It shares the network's
-`hosted-contracts-<network>` queue with Deploy and the Bridge releases. The `ZoneRouterFactory` takes no
+`hosted-contracts-<network>` queue with Deploy. The `ZoneRouterFactory` takes no
 parameters and deploys with the stack in [Deploy](#deploying-the-hosted-stack-from-ci); the command
 still releases it locally.
 
@@ -749,14 +752,37 @@ constructor arguments. A release deploys only: the pool owner still admits a con
 or router, and the Zone's Portal administrator a router
 ([Zone router deployment](../zone/zone-router.md#deployment)).
 
-### Bridge releases
+### Card releases
 
-The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
-deploys the card integration's "TS" handler (`SpenderTempoSpend`), or a Bridge card program (its
-`BridgeProvider` and `CardSpender`, through the `CardFactory`) for Bridge's `SpenderFactory` from `main`, at its deterministic address, with the repository's build of [card spend](../spend/README.md).
-It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
-one network per dispatch, and lists in its summary the calls Bridge's admin and governance submit to
-register and gate the handler; it never submits them. A program also takes `routerFactory`, the Zone
-router release's `ZoneRouterFactory`: only its routers may call the program's `spendFrom`, and the release
-`CardFactory` and the program's address depend on it. [Deploying from CI](../spend/bridge/deploy.md#deploying-from-ci) owns the
-details.
+The card integration's shared ownerless contracts release with `pnpm card-release <network>
+<release|all> [--broadcast]` ([`modules/cards/release.ts`](../../deployments/modules/cards/release.ts)),
+which the [Deploy workflow](#deploying-the-hosted-stack-from-ci) runs with `all` after the
+`ZoneRouterFactory` and before the profiles. It runs the same release engine as the factory
+releases: the same address, creation-code, and receipt checks, reconciling a release that already
+exists, and source verification after a broadcast, with `--resubmit-verification` under the same
+[repair limits](#source-verification). Nothing is recorded in a registry.
+
+| Release       | Creates                                                                                               |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `cardFactory` | The `CardFactory` bound to the release `ZoneRouterFactory`, deploying that factory first when missing |
+| `tempoSpend`  | Bridge's "TS" handler (`SpenderTempoSpend`) for the network's Bridge `SpenderFactory`                 |
+
+Each network's Bridge `SpenderFactory` is declared once, in `bridgeSpenderFactories`
+([`modules/cards/profile.ts`](../../deployments/modules/cards/profile.ts)); `all` releases both on a
+network that declares one and nothing elsewhere. [`DeployBridgeCards`](../../script/spend/bridge/lifecycle/DeployBridgeCards.s.sol)
+holds the entry points, creating each contract through the CREATE2 deployer with Earn's release salt
+([`BridgeRelease`](../../script/spend/bridge/deploy/BridgeRelease.sol)), at the addresses Bridge's
+own [deploy scripts](../spend/bridge/deploy.md) reach. The release never calls Bridge's factory:
+registering and gating the handler stay with Bridge's admin and governance, and each profile's
+`enable-card-program` step hands those calls off.
+
+A profile's card program ([`cards`](../../profiles/README.md#card-programs)) deploys with the profile:
+`deploy-card-program` creates its `BridgeProvider` at its release address and its `CardSpender`
+through the release `CardFactory`, reusing either when it exists, and records the release
+`ZoneRouterFactory` (`cardRouterFactory`), the `CardFactory`, the provider and the program. Their
+release addresses identify the first three; the program is source verified against the
+`ProgramDeployed` event that created it, which a program Bridge deployed with its own scripts also
+has. Unlike a Zone router, a recorded program is never replaced for a new build, since cardholder
+keys and routers point at its address; a later `ZoneRouterFactory` or `CardFactory` release also
+leaves it as it is. A new program is a change of `spenderId` or provider. The program deploys before the Zone router, so a Spend-mode router in the same profile may list
+it in `zoneRouter.spenders`; preflight accepts its predicted address before it holds code.

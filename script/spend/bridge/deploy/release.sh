@@ -8,8 +8,9 @@
 # predicted addresses against locally compiled creation code, and records creation from receipts
 # (a concurrent program deployment is reuse). After a broadcast to a hosted network, it checks that
 # Tempo's verifier has the source of every contract.
-# Bridge running the deploy scripts itself lands on the same addresses. The Bridge Release workflow
-# (.github/workflows/bridge-release.yml) runs this; it runs locally too.
+# Bridge running the deploy scripts itself lands on the same addresses. It runs locally, as smoke.sh
+# does; hosted networks deploy the handler with the card release and each program from its deployment
+# profile, in the Deploy workflow (.github/workflows/deploy.yml).
 #
 # Usage: script/spend/bridge/deploy/release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]
 # Env:   FACTORY               the SpenderFactory

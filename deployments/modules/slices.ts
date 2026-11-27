@@ -1,5 +1,6 @@
 import { unique } from '../core/parse.js'
 import type { ProfileSlice } from '../../deployments/modules/module.js'
+import { cardsProfile } from './cards/profile.js'
 import { accessPolicyProfile } from './earn/access-policy/profile.js'
 import { rewardsProfile } from './earn/rewards/profile.js'
 import { zoneRouterProfile } from './earn/zone-router/profile.js'
@@ -15,6 +16,7 @@ export const profileSlices = [
   zoneRouterProfile,
   rewardsProfile,
   zoneRouterModeProfile,
+  cardsProfile,
 ] as const
 
 /** The registry as core iterates it: every slice over the whole profile. */
