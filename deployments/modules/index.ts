@@ -7,7 +7,12 @@ import {
 } from '../core/components.js'
 import { unique } from '../core/parse.js'
 import type { EarnDeploymentProfile } from '../core/profile.js'
-import { deployCardProgram, deployCardProvider, enableCardProgram } from './cards/steps.js'
+import {
+  cardsModule,
+  deployCardProgram,
+  deployCardProvider,
+  enableCardProgram,
+} from './cards/steps.js'
 import { accessPolicyModule } from './earn/access-policy/index.js'
 import { validateAccess } from './earn/access-policy/steps.js'
 import { bindCore, deployCore } from './earn/core/steps.js'
@@ -111,6 +116,7 @@ export const capabilityModules: readonly CapabilityModule[] = [
   rewardsModule,
   zoneRouterModule,
   zoneRouterModeModule,
+  cardsModule,
 ]
 
 /** Every step-created contract a protected EarnShare must whitelist, in step order. */

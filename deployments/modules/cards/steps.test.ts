@@ -26,6 +26,7 @@ import {
   cardProgramEnabled,
   cardProgramHandoff,
   cardReleases,
+  cardsModule,
   deployCardProgram,
   deployCardProvider,
   enableCardProgram,
@@ -134,6 +135,24 @@ describe('card program plan', () => {
       enableCardProgram.signerAvailable?.(profile, { BRIDGE_SPENDER_FACTORY_ROLES: 'x' }, true),
     ).toBe(false)
     await expect(enableCardProgram.execute({} as never, {} as never)).resolves.toBeUndefined()
+  })
+})
+
+describe('cards preflight', () => {
+  test('refuses a profile before any broadcast when the released CardFactory is missing', async () => {
+    const getCode = vi.fn(async () => '0x' as const)
+    await expect(cardsModule.preflight!({ getCode } as never, profile)).rejects.toThrow(
+      `Released CardFactory ${outputs.cardFactory} has no code; run pnpm release first`,
+    )
+    await expect(
+      cardsModule.preflight!({ getCode } as never, { ...profile, chainId: 42431 }),
+    ).rejects.toThrow('No zoneRouterFactory release on moderato')
+    await expect(
+      cardsModule.preflight!({ getCode: vi.fn(async () => '0x60') } as never, profile),
+    ).resolves.toBeUndefined()
+    await expect(
+      cardsModule.preflight!({ getCode } as never, { ...profile, cards: null }),
+    ).resolves.toBeUndefined()
   })
 })
 

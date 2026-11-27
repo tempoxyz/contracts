@@ -26,6 +26,7 @@ import {
   deployedOutputs,
   deployerAuthority,
   requiredOutput,
+  type CapabilityModule,
   type ChainClient,
   type StepAuthority,
 } from '../module.js'
@@ -73,6 +74,21 @@ export const cardReleases = {
     return releaseAddress(
       concatHex([compile(bridgeProviderContract), bridgeProviderArgs(spenderFactory, spenderId)]),
     )
+  },
+}
+
+/**
+ * The card capability's lifecycle hooks: before any key is used, the network's released
+ * `CardFactory` is in the registry and holds code, so no card contract is broadcast for a program the
+ * deploy cannot finish.
+ */
+export const cardsModule: CapabilityModule = {
+  async preflight(client, profile) {
+    if (!profile.cards) return
+    const { cardFactory } = cardReleases.cardFactory(profile.chainId)
+    const code = await client.getCode({ address: cardFactory })
+    if (!code || code === '0x')
+      throw new Error(`Released CardFactory ${cardFactory} has no code; run pnpm release first`)
   },
 }
 
