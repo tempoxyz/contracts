@@ -775,11 +775,17 @@ describe('Zone router preflight', () => {
     ).resolves.toBeUndefined()
   })
 
-  test('deploys a Spend router through the factory its spenders bind, even one the registry no longer names', async () => {
+  test("keeps a recorded Spend router on its spenders' factory, but deploys no new one through another build's", async () => {
     const older = address('01d0')
     await expect(
-      zoneRouterModeModule.preflight!(preflightChain(older), card),
+      zoneRouterModeModule.preflight!(preflightChain(older), card, {
+        ...outputs,
+        zoneRouterFactory: older,
+      }),
     ).resolves.toBeUndefined()
+    await expect(zoneRouterModeModule.preflight!(preflightChain(older), card)).rejects.toThrow(
+      `zoneRouter.spenders bind ZoneRouterFactory ${older}, not this build's ${releasedFactory}, so a new router through it could not be source verified`,
+    )
   })
 
   test('refuses spenders bound to a factory other than the recorded one, or to none', async () => {

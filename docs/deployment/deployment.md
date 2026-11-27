@@ -715,11 +715,12 @@ stack is redeployed: dispatch Deploy after it merges, then merge the record pull
 A profile's Zone router deploys through the release `ZoneRouterFactory`, recorded beside it as
 `zoneRouterFactory`. Deploy replaces a router whose recorded runtime differs from this checkout's
 build (apart from immutables and compiler metadata) through the release factory of that build, which
-`pnpm release` deploys first; a factory read from the registry must be this build's, or deploy fails
-asking for `pnpm release`. A router with Spend deploys through the factory its spenders bind instead,
-across builds and mode changes, since its spenders, such as the profile's own card program, take
-spends only from that factory's routers; its admissions on a factory or router from an older build
-are handed to a person rather than granted with the lifecycle's keys. It does not revoke the old one: its pool allowlist entries and Portal
+`pnpm release` deploys first; a new router deploys only through this build's release factory, so
+deploy fails asking for `pnpm release` when the registry names another. A router with Spend stays on
+the factory its spenders bind, since they, such as the profile's own card program, take spends only
+from that factory's routers: it is not replaced for a new build, its admissions on a factory or router
+from an older build are handed to a person rather than granted with the lifecycle's keys, and a new
+mode needs spenders bound to this build's release factory. It does not revoke the old one: its pool allowlist entries and Portal
 gateway stay until their owners remove them, since a router address can serve more than one
 profile. Once nothing uses the old router, the pool owner calls `setTakerAllowed(old, false)` and
 `setRecipientAllowed(old, false)` on the pool, and the Zone administrator calls

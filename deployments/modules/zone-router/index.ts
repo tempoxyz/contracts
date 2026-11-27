@@ -47,7 +47,9 @@ export const zoneRouterModeModule: CapabilityModule = {
     if (!profile.zoneRouter) return undefined
     const client = rpcClient(rpcUrl)
     const zone = await registeredZone(client, profile.zoneRouter.zoneId)
-    const bound = await spenderBoundFactory(client, profile)
+    // Discovery only names the factory; preflight refuses spenders it cannot resolve, so verifying a
+    // recorded router never depends on today's CardFactory.
+    const bound = await spenderBoundFactory(client, profile).catch(() => undefined)
     return {
       ...(bound ? { zoneRouterFactory: bound } : {}),
       zoneRouterPortal: zone.portal,
@@ -286,12 +288,15 @@ async function preflightZoneRouter(
       )
     }
   }
-  if (!outputs.zoneRouterFactory && !bound) {
-    // A registry naming another build's factory would deploy and then replace routers forever.
+  if (!outputs.zoneRouterFactory) {
+    // A router not deployed yet is source verified against this build, so only this build's factory
+    // can create one; a registry naming another build's factory would also replace routers forever.
     const expected = routerFactoryRelease.address()
     if (getAddress(factory) !== expected)
       throw new Error(
-        `Released ZoneRouterFactory ${factory} is not this build's ${expected}; run pnpm release and record its registry entry first`,
+        bound
+          ? `zoneRouter.spenders bind ZoneRouterFactory ${factory}, not this build's ${expected}, so a new router through it could not be source verified; list spenders bound to this build's release factory`
+          : `Released ZoneRouterFactory ${factory} is not this build's ${expected}; run pnpm release and record its registry entry first`,
       )
   }
   await requireCode(client, {
