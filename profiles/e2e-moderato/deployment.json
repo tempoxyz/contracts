@@ -14,8 +14,8 @@
     "zone": "ff2bd929d1d6ce22b12b4dce9ac57d470e534ded14c3697058e348a10c7cf600",
     "targetYield": null,
     "boostRewards": null,
-    "zoneRouterFactory": null,
-    "zoneRouter": null
+    "zoneRouter": null,
+    "cards": null
   },
   "target": {
     "chainId": 42431,
