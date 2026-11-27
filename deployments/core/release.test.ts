@@ -12,13 +12,19 @@ import {
   keccak256,
   parseAbiParameters,
   stringToBytes,
+  zeroAddress,
+  zeroHash,
   type Address,
   type Hex,
 } from 'viem'
 import { Addresses } from 'viem/tempo'
 import { describe, expect, test, vi } from 'vitest'
 
-import { deployFactoryReleaseScriptAbi } from '../abis/index.js'
+import {
+  deployBridgeCardsScriptAbi,
+  deployFactoryReleaseScriptAbi,
+  deployRouterReleaseScriptAbi,
+} from '../abis/index.js'
 import { hostedEnvironments } from '../chain/tempo.js'
 import {
   archiveReleaseBroadcast,
@@ -26,29 +32,35 @@ import {
   broadcastPath,
   create2Deployer,
   createdContracts,
-  deployFactoryRelease,
-  factoryReleaseKinds,
-  planFactoryRelease,
+  deployRelease,
+  main,
+  networkReleaseKinds,
+  planRelease,
   predictRelease,
   redactRpcCredentials,
   registryPullRequestBody,
-  registryReleaseKinds,
   registryUpdates,
-  releaseKindsFor,
-  main,
+  releaseKinds,
   releaseSalt,
   updateReleaseRegistry,
-  type FactoryReleaseRun,
-  type FactoryReleaseDependencies,
+  type ReleaseDependencies,
+  type ReleaseRun,
   type PredictedContract,
-} from './factory-release.js'
-import { routerReleaseKinds } from './zone-router-release.js'
+} from './release.js'
+import { bridgeSpenderFactories } from './releases.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const bytecode = (contract: string) =>
   `0x6080${Buffer.from(contract.split(':')[1]!).toString('hex')}` as Hex
-const core = planFactoryRelease('core', 4217)
+const core = planRelease('core', 4217)
 const hash = (index: number) => `0x${String(index + 1).repeat(64)}` as Hex
+const create2 = (initCode: Hex) =>
+  getContractAddress({
+    opcode: 'CREATE2',
+    from: create2Deployer,
+    salt: releaseSalt,
+    bytecode: initCode,
+  })
 
 /** Forge's broadcast of CREATE2 creations: the deployer call's input is the salt, then the init code. */
 function broadcastFile(created: readonly PredictedContract[], status = '0x1') {
@@ -64,9 +76,9 @@ function broadcastFile(created: readonly PredictedContract[], status = '0x1') {
   }
 }
 
-describe('planFactoryRelease', () => {
+describe('planRelease', () => {
   test('the core release runs earnFactoryRelease for the chain with the large-creation multiplier', () => {
-    const plan = planFactoryRelease('core', 4217)
+    const plan = planRelease('core', 4217)
     expect(plan.script).toBe(
       'script/earn/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript',
     )
@@ -86,7 +98,7 @@ describe('planFactoryRelease', () => {
   })
 
   test('every engine factory release runs its own entry point', () => {
-    const plan = planFactoryRelease('erc4626Engine', 42431)
+    const plan = planRelease('erc4626Engine', 42431)
     expect(plan.script).toBe(
       'script/earn/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript',
     )
@@ -100,19 +112,90 @@ describe('planFactoryRelease', () => {
   })
 
   test('refuses an unknown release', () => {
-    expect(() => planFactoryRelease('vault', 4217)).toThrow('Unknown factory release vault')
+    expect(() => planRelease('vault', 4217)).toThrow('Unknown release vault')
+    // Routers are per profile: `pnpm earn deploy` deploys them through the released factory.
+    expect(() => planRelease('zoneRouter', 4217)).toThrow('Unknown release zoneRouter')
   })
 
-  test("plans only Earn's releases, without parameters", () => {
-    for (const kind of factoryReleaseKinds) {
-      expect(planFactoryRelease(kind, 4217)).toMatchObject({
+  test('every release names its own registry entry, without parameters', () => {
+    for (const kind of releaseKinds.filter((kind) => kind !== 'tempoSpend')) {
+      expect(planRelease(kind, 4217)).toMatchObject({
         kind,
         parameters: {},
+        registryKey: kind === 'core' ? 'earn' : kind,
       })
     }
-    for (const kind of ['zoneRouterFactory', 'sendSpender', 'zoneRouter']) {
-      expect(() => planFactoryRelease(kind, 4217)).toThrow(`Unknown factory release ${kind}`)
-    }
+  })
+
+  test('the ZoneRouterFactory takes no arguments', () => {
+    const plan = planRelease('zoneRouterFactory', 42431)
+    expect(plan.script).toBe(
+      'script/zone/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript',
+    )
+    expect(decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: plan.calldata })).toEqual({
+      functionName: 'zoneRouterFactory',
+      args: [42431n],
+    })
+    expect(predictRelease(plan, bytecode)).toMatchObject([
+      {
+        name: 'ZoneRouterFactory',
+        constructorArgs: '0x',
+        address: create2(bytecode('src/zone/ZoneRouterFactory.sol:ZoneRouterFactory')),
+      },
+    ])
+  })
+
+  test('the SendSpender never converts and binds the release ZoneRouterFactory, deployed first when missing', () => {
+    const plan = planRelease('sendSpender', 42431)
+    expect(decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: plan.calldata })).toEqual({
+      functionName: 'sendSpender',
+      args: [42431n, zeroAddress, zeroAddress, zeroAddress, zeroHash],
+    })
+    const [routerFactory, spender] = predictRelease(plan, bytecode)
+    expect(routerFactory!.address).toBe(
+      create2(bytecode('src/zone/ZoneRouterFactory.sol:ZoneRouterFactory')),
+    )
+    const args = encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
+      routerFactory!.address,
+      zeroAddress,
+      zeroAddress,
+      zeroHash,
+    ])
+    expect(spender).toMatchObject({
+      name: 'SendSpender',
+      contract: 'src/zone/spenders/SendSpender.sol:SendSpender',
+      constructorArgs: args,
+      address: create2(
+        concatHex([bytecode('src/zone/spenders/SendSpender.sol:SendSpender'), args]),
+      ),
+    })
+  })
+
+  test('the CardFactory binds the release ZoneRouterFactory, deployed first when missing', () => {
+    const plan = planRelease('cardFactory', 42431)
+    expect(plan.script).toBe(
+      'script/spend/bridge/lifecycle/DeployBridgeCards.s.sol:DeployBridgeCardsScript',
+    )
+    expect(decodeFunctionData({ abi: deployBridgeCardsScriptAbi, data: plan.calldata })).toEqual({
+      functionName: 'cardFactory',
+      args: [42431n],
+    })
+    const [routerFactory, cardFactory] = predictRelease(plan, bytecode)
+    const args = encodeAbiParameters(parseAbiParameters('address'), [routerFactory!.address])
+    expect(cardFactory).toMatchObject({
+      name: 'CardFactory',
+      contract: 'src/spend/CardFactory.sol:CardFactory',
+      constructorArgs: args,
+      address: create2(concatHex([bytecode('src/spend/CardFactory.sol:CardFactory'), args])),
+    })
+  })
+
+  test("the TS handler needs the network's declared SpenderFactory", () => {
+    expect(Object.values(bridgeSpenderFactories).every((factory) => factory === null)).toBe(true)
+    for (const chainId of [42431, 4217, 1337])
+      expect(() => planRelease('tempoSpend', chainId)).toThrow(
+        `No Bridge SpenderFactory is declared for chain ${chainId}`,
+      )
   })
 })
 
@@ -198,16 +281,16 @@ describe('createdContracts', () => {
   })
 })
 
-describe('deployFactoryRelease', () => {
-  const predicted = predictRelease(planFactoryRelease('core', 4217), bytecode)
+describe('deployRelease', () => {
+  const predicted = predictRelease(planRelease('core', 4217), bytecode)
 
   function runtime(existing: readonly Address[] = []) {
     const dependencies = {
       client: vi.fn(() => releaseClient(4217)),
       archiveBroadcast: vi.fn(),
-      confirmCreations: vi.fn<FactoryReleaseDependencies['confirmCreations']>(
-        async (_client, _plan, created) => [...created],
-      ),
+      confirmCreations: vi.fn<ReleaseDependencies['confirmCreations']>(async (_client, created) => [
+        ...created,
+      ]),
       forge: vi.fn(),
       preflight: vi.fn(),
       removeScriptCache: vi.fn(),
@@ -229,7 +312,7 @@ describe('deployFactoryRelease', () => {
     }
     return dependencies
   }
-  const options = (overrides: Partial<Parameters<typeof deployFactoryRelease>[0]> = {}) => ({
+  const options = (overrides: Partial<Parameters<typeof deployRelease>[0]> = {}) => ({
     network: 'mainnet',
     kind: 'core',
     broadcast: true,
@@ -240,7 +323,7 @@ describe('deployFactoryRelease', () => {
 
   test('broadcasts the missing contracts, then source verifies every one', async () => {
     const dependencies = runtime()
-    const result = await deployFactoryRelease(
+    const result = await deployRelease(
       options({
         environment: {
           PATH: '/bin',
@@ -267,7 +350,7 @@ describe('deployFactoryRelease', () => {
       FOUNDRY_ETH_RPC_URL: 'https://rpc.tempo.xyz/',
     })
     expect(dependencies.readFile).toHaveBeenCalledWith(
-      broadcastPath('/repo', planFactoryRelease('core', 4217), 4217, true),
+      broadcastPath('/repo', planRelease('core', 4217), 4217, true),
     )
     expect(dependencies.verify).toHaveBeenCalledTimes(3)
     expect(dependencies.verify.mock.calls[2]![0]).toMatchObject({
@@ -284,7 +367,7 @@ describe('deployFactoryRelease', () => {
   test('reconciles a release that already exists without running Forge, and still verifies it', async () => {
     const dependencies = runtime(predicted.map((contract) => contract.address))
     dependencies.client.mockReturnValue(releaseClient(42431))
-    const result = await deployFactoryRelease(options({ network: 'moderato' }), dependencies)
+    const result = await deployRelease(options({ network: 'moderato' }), dependencies)
     expect(dependencies.forge).not.toHaveBeenCalled()
     expect(dependencies.removeScriptCache).not.toHaveBeenCalled()
     expect(dependencies.verify).toHaveBeenCalledTimes(3)
@@ -294,7 +377,7 @@ describe('deployFactoryRelease', () => {
 
   test('passes explicit verifier repair through without redeploying existing contracts', async () => {
     const dependencies = runtime(predicted.map((contract) => contract.address))
-    await deployFactoryRelease(options({ resubmit: true }), dependencies)
+    await deployRelease(options({ resubmit: true }), dependencies)
     expect(dependencies.forge).not.toHaveBeenCalled()
     expect(dependencies.verify).toHaveBeenCalledTimes(3)
     for (const [parameters] of dependencies.verify.mock.calls)
@@ -304,7 +387,7 @@ describe('deployFactoryRelease', () => {
   test('refuses verifier repair in a dry run before RPC or Forge', async () => {
     const dependencies = runtime()
     await expect(
-      deployFactoryRelease(options({ broadcast: false, resubmit: true }), dependencies),
+      deployRelease(options({ broadcast: false, resubmit: true }), dependencies),
     ).rejects.toThrow('--resubmit-verification requires --broadcast')
     expect(dependencies.client).not.toHaveBeenCalled()
     expect(dependencies.forge).not.toHaveBeenCalled()
@@ -313,7 +396,7 @@ describe('deployFactoryRelease', () => {
 
   test('creates only what a partly deployed release is missing', async () => {
     const dependencies = runtime([predicted[0]!.address])
-    const result = await deployFactoryRelease(options(), dependencies)
+    const result = await deployRelease(options(), dependencies)
     expect(dependencies.forge).toHaveBeenCalledOnce()
     expect(result.current).toBeUndefined()
     expect(result.contracts.map((contract) => contract.transaction)).toEqual([
@@ -328,7 +411,7 @@ describe('deployFactoryRelease', () => {
     dependencies.verify.mockRejectedValueOnce(
       new Error('verifier timed out calling https://user:secret@rpc.tempo.xyz'),
     )
-    const result = await deployFactoryRelease(
+    const result = await deployRelease(
       options({
         environment: {
           DEPLOYER_PRIVATE_KEY: '0xkey',
@@ -355,9 +438,7 @@ describe('deployFactoryRelease', () => {
     dependencies.forge.mockImplementationOnce(() => {
       throw new Error('forge script failed')
     })
-    await expect(deployFactoryRelease(options(), dependencies)).rejects.toThrow(
-      'forge script failed',
-    )
+    await expect(deployRelease(options(), dependencies)).rejects.toThrow('forge script failed')
     expect(dependencies.removeScriptCache).toHaveBeenCalledWith(
       '/repo',
       'DeployFactoryRelease.s.sol',
@@ -367,13 +448,13 @@ describe('deployFactoryRelease', () => {
   test('a dry run simulates without broadcasting or verifying', async () => {
     const dependencies = runtime()
     dependencies.client.mockReturnValue(releaseClient(42431))
-    const result = await deployFactoryRelease(
+    const result = await deployRelease(
       options({ network: 'moderato', broadcast: false }),
       dependencies,
     )
     expect(dependencies.forge.mock.calls[0]![0]).not.toContain('--broadcast')
     expect(dependencies.readFile).toHaveBeenCalledWith(
-      broadcastPath('/repo', planFactoryRelease('core', 42431), 42431, false),
+      broadcastPath('/repo', planRelease('core', 42431), 42431, false),
     )
     expect(dependencies.verify).not.toHaveBeenCalled()
     expect(result.contracts.every((contract) => contract.match === null)).toBe(true)
@@ -382,9 +463,7 @@ describe('deployFactoryRelease', () => {
   test('rejects a wrong RPC chain before checking even an existing release', async () => {
     const dependencies = runtime(predicted.map((contract) => contract.address))
     dependencies.client.mockReturnValue(releaseClient(1))
-    await expect(deployFactoryRelease(options(), dependencies)).rejects.toThrow(
-      'Release RPC chain 1',
-    )
+    await expect(deployRelease(options(), dependencies)).rejects.toThrow('Release RPC chain 1')
     expect(dependencies.existingCode).not.toHaveBeenCalled()
     expect(dependencies.verify).not.toHaveBeenCalled()
   })
@@ -397,7 +476,7 @@ describe('deployFactoryRelease', () => {
     dependencies.existingCode
       .mockResolvedValueOnce(new Set())
       .mockResolvedValueOnce(new Set(predicted.map((contract) => contract.address)))
-    const result = await deployFactoryRelease(options(), dependencies)
+    const result = await deployRelease(options(), dependencies)
     expect(result.contracts.every((contract) => contract.transaction === null)).toBe(true)
     expect(dependencies.archiveBroadcast).toHaveBeenCalledBefore(dependencies.forge)
     expect(dependencies.confirmCreations).not.toHaveBeenCalled()
@@ -406,9 +485,9 @@ describe('deployFactoryRelease', () => {
   test('refuses an unknown network and a missing deployer key before running Forge', async () => {
     const dependencies = runtime()
     await expect(
-      deployFactoryRelease(options({ network: 'devnet', environment: {} }), dependencies),
+      deployRelease(options({ network: 'devnet', environment: {} }), dependencies),
     ).rejects.toThrow('Unknown hosted network devnet')
-    await expect(deployFactoryRelease(options({ environment: {} }), dependencies)).rejects.toThrow(
+    await expect(deployRelease(options({ environment: {} }), dependencies)).rejects.toThrow(
       'DEPLOYER_PRIVATE_KEY is required',
     )
     expect(dependencies.forge).not.toHaveBeenCalled()
@@ -437,40 +516,36 @@ describe('redactRpcCredentials', () => {
   })
 })
 
-describe('release selection', () => {
-  test('all deploys the core release, then every engine factory the registry names', () => {
-    expect(releaseKindsFor('all')).toEqual(['core', 'erc4626Engine'])
-    expect(registryReleaseKinds).not.toContain('rewards')
-    expect(releaseKindsFor('rewards')).toEqual(['rewards'])
-    expect(() => releaseKindsFor('vault')).toThrow('Unknown factory release vault')
-  })
-
-  test('refuses the router releases, pointing to their own CLI', () => {
-    for (const kind of routerReleaseKinds) {
-      expect(() => releaseKindsFor(kind)).toThrow(
-        `Unknown factory release ${kind}; expected all or one of ${factoryReleaseKinds.join(', ')} (Zone router contracts release with pnpm zone-router-release)`,
-      )
-    }
+describe('network releases', () => {
+  test('a network takes every shared contract in order, the card releases only with a Bridge SpenderFactory', () => {
+    const shared = ['core', 'rewards', 'erc4626Engine', 'zoneRouterFactory', 'sendSpender']
+    expect(releaseKinds).toEqual([...shared, 'cardFactory', 'tempoSpend'])
+    expect(networkReleaseKinds('moderato')).toEqual(shared)
+    expect(networkReleaseKinds('mainnet')).toEqual(shared)
+    expect(() => networkReleaseKinds('devnet')).toThrow('Unknown hosted network devnet')
   })
 })
 
-describe('factory release CLI', () => {
-  test('refuses a router release and parameters before deploying anything', async () => {
-    for (const kind of routerReleaseKinds) {
-      await expect(main(['moderato', kind], '/nonexistent')).rejects.toThrow(
-        'Zone router contracts release with pnpm zone-router-release',
-      )
-    }
-    await expect(main(['moderato', 'core', '--parameters', '{}'], '/nonexistent')).rejects.toThrow(
+describe('release CLI', () => {
+  test('takes only a network, and refuses parameters, before deploying anything', async () => {
+    await expect(main(['moderato', 'core'], '/nonexistent')).rejects.toThrow(
+      'Usage: pnpm release <network>',
+    )
+    await expect(main([], '/nonexistent')).rejects.toThrow('Usage: pnpm release <network>')
+    await expect(main(['devnet'], '/nonexistent')).rejects.toThrow('Unknown hosted network devnet')
+    await expect(main(['moderato', '--parameters', '{}'], '/nonexistent')).rejects.toThrow(
       "Unknown option '--parameters'",
     )
   })
 })
 
 describe('registry updates', () => {
-  const release = (network: 'mainnet' | 'moderato', kind: 'core' | 'erc4626Engine') => {
+  const release = (
+    network: 'mainnet' | 'moderato',
+    kind: 'core' | 'erc4626Engine' | 'zoneRouterFactory' | 'sendSpender',
+  ) => {
     const chainId = hostedEnvironments[network].chainId
-    const plan = planFactoryRelease(kind, chainId)
+    const plan = planRelease(kind, chainId)
     const contracts = predictRelease(plan, bytecode).map(
       ({ initCode: _initCode, ...contract }) => ({ ...contract, match: 'exact_match' as const }),
     )
@@ -480,13 +555,13 @@ describe('registry updates', () => {
       kind,
       broadcast: true,
       contracts,
-      registry: { [plan.registryKey!]: contracts.at(-1)!.address },
+      registry: { [plan.registryKey]: contracts.at(-1)!.address },
     }
   }
   const run = (
     network: 'mainnet' | 'moderato',
-    overrides: Partial<FactoryReleaseRun> = {},
-  ): FactoryReleaseRun => ({
+    overrides: Partial<ReleaseRun> = {},
+  ): ReleaseRun => ({
     network,
     chainId: hostedEnvironments[network].chainId,
     broadcast: true,
@@ -516,6 +591,31 @@ describe('registry updates', () => {
     expect(skipped).toEqual([])
   })
 
+  test('records the shared router contracts under their own keys', () => {
+    const routers = run('moderato', {
+      releases: [release('moderato', 'zoneRouterFactory'), release('moderato', 'sendSpender')],
+    })
+    const [factory, spender] = predictRelease(planRelease('sendSpender', 42431), bytecode)
+    expect(registry([routers]).updates.map((update) => [update.key, update.address])).toEqual([
+      ['zoneRouterFactory', factory!.address],
+      ['sendSpender', spender!.address],
+    ])
+  })
+
+  test('records the router factory only together with the releases bound to it', () => {
+    const partial = run('moderato', {
+      releases: [release('moderato', 'core'), release('moderato', 'zoneRouterFactory')],
+      failed: { kind: 'sendSpender' },
+    })
+    const { updates, skipped } = registry([partial])
+    expect(updates.map((update) => update.key)).toEqual(['earn'])
+    expect(skipped).toContainEqual({
+      network: 'moderato',
+      kind: 'zoneRouterFactory',
+      reason: 'recorded only with zoneRouterFactory, sendSpender, which bind one ZoneRouterFactory',
+    })
+  })
+
   test('skips a release with an unverified contract, a dry run, and a failed release', () => {
     const unverified = run('moderato')
     unverified.releases[0]!.contracts[1]!.match = null
@@ -541,11 +641,13 @@ describe('registry updates', () => {
     const updated = updateReleaseRegistry(source, [
       { network: 'moderato', key: 'earn', address: address('c') },
       { network: 'mainnet', key: 'erc4626Engine', address: address('d') },
+      { network: 'mainnet', key: 'zoneRouterFactory', address: address('e') },
     ])
     const changed = updated.split('\n').filter((line, index) => line !== source.split('\n')[index])
     expect(changed).toEqual([
-      `      erc4626Engine: getAddress('${address('d')}'),`,
-      `      earn: getAddress('${address('c')}'),`,
+      `    erc4626Engine: getAddress('${address('d')}'),`,
+      `    zoneRouterFactory: getAddress('${address('e')}'),`,
+      `    earn: getAddress('${address('c')}'),`,
     ])
     expect(updated.indexOf(`erc4626Engine: getAddress('${address('d')}')`)).toBeLessThan(
       updated.indexOf('  moderato: {'),
@@ -554,7 +656,9 @@ describe('registry updates', () => {
       updateReleaseRegistry(source, [{ network: 'devnet', key: 'earn', address: address('c') }]),
     ).toThrow('releases.ts has no devnet release')
     expect(() =>
-      updateReleaseRegistry(source, [{ network: 'moderato', key: 'veda', address: address('c') }]),
+      updateReleaseRegistry(source, [
+        { network: 'moderato', key: 'veda' as never, address: address('c') },
+      ]),
     ).toThrow('releases.ts has no moderato.veda entry')
   })
 
@@ -565,31 +669,31 @@ describe('registry updates', () => {
       registry(runs),
       'https://github.com/o/r/actions/runs/1',
     )
-    expect(body).toContain('[the Factory Release run](https://github.com/o/r/actions/runs/1)')
+    expect(body).toContain('[the Deploy run](https://github.com/o/r/actions/runs/1)')
     expect(body).toContain(`| moderato | core | EarnFactory | \`${coreAddress}\` |`)
     expect(body).toContain('- mainnet core: failed')
   })
   test('rejects forged addresses, missing or duplicate contracts, unknown matches and run identity', () => {
     for (const mutate of [
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.registry = { earn: address('bad') }
       },
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.contracts = []
       },
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.contracts[0] = value.releases[0]!.contracts[1]!
       },
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.contracts[0]!.address = address('bad')
       },
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.contracts[0]!.match = 'no_match' as never
       },
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.chainId = 1
       },
-      (value: FactoryReleaseRun) => {
+      (value: ReleaseRun) => {
         value.releases[0]!.broadcast = 'true' as never
       },
     ]) {
@@ -603,7 +707,9 @@ describe('registry updates', () => {
     const source = readFileSync(new URL('./releases.ts', import.meta.url), 'utf8')
     for (const key of ['e.*', 'earn\n', '(earn)', 'earn|erc4626Engine'])
       expect(() =>
-        updateReleaseRegistry(source, [{ network: 'mainnet', key, address: address('c') }]),
+        updateReleaseRegistry(source, [
+          { network: 'mainnet', key: key as never, address: address('c') },
+        ]),
       ).toThrow('has no')
     expect(() =>
       updateReleaseRegistry(source, [{ network: 'mainnet\n', key: 'earn', address: address('c') }]),
@@ -638,9 +744,9 @@ describe('release creation evidence', () => {
       }),
       getTransaction: async () => ({ to: address('bad'), input: '0x' }),
     }
-    await expect(
-      confirmReleaseCreations(client as never, core, created, predicted),
-    ).rejects.toThrow('not its deterministic creation')
+    await expect(confirmReleaseCreations(client as never, created, predicted)).rejects.toThrow(
+      'not its deterministic creation',
+    )
   })
 })
 
@@ -658,10 +764,10 @@ function releaseClient(chainId: number, binding?: Address) {
   })
 }
 
-test('factory release CLI routes verifier repair to its broadcast guard', async () => {
-  await expect(
-    main(['moderato', 'core', '--resubmit-verification'], '/nonexistent'),
-  ).rejects.toThrow('--resubmit-verification requires --broadcast')
+test('release CLI routes verifier repair to its broadcast guard', async () => {
+  await expect(main(['moderato', '--resubmit-verification'], '/nonexistent')).rejects.toThrow(
+    '--resubmit-verification requires --broadcast',
+  )
   await expect(main(['registry', '--resubmit-verification'], '/nonexistent')).rejects.toThrow(
     '--resubmit-verification is not supported by registry',
   )

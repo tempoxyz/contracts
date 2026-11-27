@@ -19,6 +19,7 @@ import {
   positiveInteger,
   unique,
 } from '../../core/parse.js'
+import { releasedContract } from '../../core/releases.js'
 import { required, requiredOutput, type ProfileSlice, type SliceProfile } from '../module.js'
 
 /** Each op a `ZoneRouter` mode may enable, in callback-op order, with its `enabledOps` bit. */
@@ -37,8 +38,8 @@ export type ZoneRouterEarn =
   | { privateAsset: Address; pool?: undefined; customerId?: undefined }
 
 /**
- * One `ZoneRouter` mode and the factory that deploys it. The constructor's rules hold at parse time:
- * `earn` exactly when Deposit or Redeem is enabled, `spenders` exactly when Spend is.
+ * One `ZoneRouter` mode, which the released `ZoneRouterFactory` deploys. The constructor's rules hold
+ * at parse time: `earn` exactly when Deposit or Redeem is enabled, `spenders` exactly when Spend is.
  */
 export type ZoneRouterIntent = {
   zoneId: number
@@ -46,8 +47,6 @@ export type ZoneRouterIntent = {
   earn?: ZoneRouterEarn
   /** Spenders Spend may use; their order is part of the mode and so of the router's address. */
   spenders?: Address[]
-  /** An existing `ZoneRouterFactory`; the lifecycle deploys one when omitted. */
-  factory?: Address
 }
 
 /** The profile fields the router slice owns. */
@@ -60,9 +59,9 @@ const legacyModeIntent = { zoneRouterContractRelease: 2 } as const
 const legacyComponentIntent = { contractRelease: 2 } as const
 
 /**
- * The `zoneRouter` slice: a `ZoneRouter` mode from `zone-router/`, the `ZoneRouterFactory` that deploys it
- * unless the profile names one, and the Portal of the Zone it serves. Each is optional periphery, so
- * a mode change deploys a new router through the same factory.
+ * The `zoneRouter` slice: a `ZoneRouter` mode from `zone-router/`, deployed through the released
+ * `ZoneRouterFactory` (from the release registry, recorded beside it), and the Portal of the Zone it
+ * serves. A mode change deploys a new router through the same factory.
  */
 export const zoneRouterModeProfile = {
   authoredKeys: ['zoneRouter'],
@@ -81,10 +80,6 @@ export const zoneRouterModeProfile = {
   deploymentIntent: (profile: RouterProfile) =>
     profile.zoneRouter ? { zoneRouter: profile.zoneRouter, ...legacyModeIntent } : {},
   components: {
-    zoneRouterFactory: (profile: RouterProfile, deployment: string) =>
-      profile.zoneRouter && profile.zoneRouter.factory === undefined
-        ? { ...legacyComponentIntent, deployment }
-        : null,
     zoneRouter: (profile: RouterProfile, deployment: string) =>
       profile.zoneRouter
         ? {
@@ -95,8 +90,8 @@ export const zoneRouterModeProfile = {
           }
         : null,
   },
-  externalAddresses: { zoneRouterPortal: 'zoneRouter' },
-  periphery: { zoneRouterFactory: 'zoneRouterFactory', zoneRouter: 'zoneRouter' },
+  externalAddresses: { zoneRouterPortal: 'zoneRouter', zoneRouterFactory: 'zoneRouter' },
+  periphery: { zoneRouter: 'zoneRouter' },
 } as const satisfies ProfileSlice<ZoneRouterFields>
 
 /** The configured router, or a lifecycle error naming the module when the profile has none. */
@@ -104,9 +99,20 @@ export function configuredZoneRouter(profile: ZoneRouterFields) {
   return required(profile.zoneRouter ?? undefined, 'Zone router module')
 }
 
-/** The factory the router deploys through: the profile's, or the one the lifecycle deployed. */
-export function zoneRouterFactory(profile: ZoneRouterFields, outputs: Record<string, Address>) {
-  return configuredZoneRouter(profile).factory ?? requiredOutput(outputs, 'zoneRouterFactory')
+/**
+ * The factory the router deploys through: the recorded one, which discovery sets for a Spend router to
+ * the one its spenders bind, or for any other router not deployed yet the released
+ * `ZoneRouterFactory` from the registry, which a profile never creates.
+ */
+export function zoneRouterFactory(profile: RouterProfile, outputs: Record<string, Address>) {
+  const router = configuredZoneRouter(profile)
+  if (outputs.zoneRouterFactory) return outputs.zoneRouterFactory
+  // A Spend router through any other factory could never spend, so it never falls back.
+  if (router.spenders?.length)
+    throw new Error(
+      'The ZoneRouterFactory zoneRouter.spenders bind is unresolved; rerun once every spender answers ROUTER_FACTORY',
+    )
+  return releasedContract(profile.chainId, 'zoneRouterFactory')
 }
 
 /** The router's `ZoneRouter.Mode`, from which its constructor arguments and address derive. */
@@ -140,7 +146,7 @@ export function zoneRouterModeHash(mode: ZoneRouterMode): Hex {
 }
 
 function parseZoneRouter(value: Record<string, unknown>, path: string): ZoneRouterIntent {
-  exactKeys(value, path, ['zoneId', 'ops'], ['earn', 'spenders', 'factory'])
+  exactKeys(value, path, ['zoneId', 'ops'], ['earn', 'spenders'])
   const zoneId = positiveInteger(value.zoneId, `${path}.zoneId`)
   if (zoneId > 4_294_967_295) throw new Error(`${path}.zoneId must fit uint32`)
   const ops = array(value.ops, `${path}.ops`).map((op, index) =>
@@ -184,7 +190,6 @@ function parseZoneRouter(value: Record<string, unknown>, path: string): ZoneRout
       ? {}
       : { earn: parseEarn(object(value.earn, `${path}.earn`), `${path}.earn`) }),
     ...(spenders ? { spenders } : {}),
-    ...(value.factory === undefined ? {} : { factory: address(value.factory, `${path}.factory`) }),
   }
 }
 

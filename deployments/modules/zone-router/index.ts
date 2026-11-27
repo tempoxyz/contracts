@@ -25,7 +25,7 @@ import {
   spenderRouterFactory,
 } from './inspection.js'
 import { zoneRouterFactory, zoneRouterMode, zoneRouterModeHash } from './profile.js'
-import { spenderReleases } from './releases.js'
+import { routerFactoryRelease, spenderReleases } from './releases.js'
 import {
   enablesEarnShare,
   missingZoneRouterSeeds,
@@ -35,17 +35,23 @@ import {
 import { zoneRouterTokens } from './steps.js'
 
 /**
- * The Zone router capability: a `ZoneRouter` mode deployed through a `ZoneRouterFactory` (the
- * profile's, or one it deploys), its PropAMM admission when its Earn binding converts, and the
- * token and callback-gateway readiness its Zone's Portal administrator owns.
+ * The Zone router capability: a `ZoneRouter` mode deployed through the released `ZoneRouterFactory`,
+ * its PropAMM admission when its Earn binding converts, and the token and callback-gateway readiness
+ * its Zone's Portal administrator owns.
  */
 export const zoneRouterModeModule: CapabilityModule = {
   preflight: preflightZoneRouter,
   // The Factory-registered Portal, Messenger and sequencers of the router's Zone, read from the L1.
+  // A Spend router's factory is the one its spenders bind, which they keep across mode changes.
   async discover({ profile, rpcUrl }) {
     if (!profile.zoneRouter) return undefined
-    const zone = await registeredZone(rpcClient(rpcUrl), profile.zoneRouter.zoneId)
+    const client = rpcClient(rpcUrl)
+    const zone = await registeredZone(client, profile.zoneRouter.zoneId)
+    // Discovery only names the factory; preflight refuses spenders it cannot resolve, so verifying a
+    // recorded router never depends on today's CardFactory.
+    const bound = await spenderBoundFactory(client, profile).catch(() => undefined)
     return {
+      ...(bound ? { zoneRouterFactory: bound } : {}),
       zoneRouterPortal: zone.portal,
       zoneRouterMessenger: zone.messenger,
       ...Object.fromEntries(
@@ -212,19 +218,17 @@ function isZoneRouterMetadataOutput(key: string) {
 }
 
 /**
- * Before any key is used: the Zone is registered (discovery reads it), every spender and a named
- * factory hold code and the factory answers as one, every spender takes `spendFrom` from that factory's
- * routers, and an Earn binding's route matches the vault asset as `ZoneRouter`'s constructor requires.
+ * The ZoneRouterFactory each listed spender takes spends from, in order: a forthcoming card program's
+ * from the released CardFactory, every other spender's own `ROUTER_FACTORY` (undefined when it reports
+ * none).
  */
-async function preflightZoneRouter(
+async function spenderFactories(
   client: Pick<PublicClient, 'getCode' | 'readContract'>,
   profile: EarnDeploymentProfile,
   outputs: Record<string, Address> = {},
 ) {
-  const router = profile.zoneRouter
-  if (!router) return
   // The card program deploys before the router: the recorded one, which a failed broadcast may have
-  // left without code, or else the one the release CardFactory predicts.
+  // left without code, or else the one the released CardFactory predicts.
   const cardProgram =
     outputs.cardProgram && outputs.cardRouterFactory
       ? {
@@ -234,41 +238,102 @@ async function preflightZoneRouter(
       : await profileCardProgram(client, profile)
   const forthcoming = (spender: Address) =>
     cardProgram !== undefined && getAddress(spender) === cardProgram.program
+  // A deployed spender answers for itself; only a card program not deployed yet takes the binding its
+  // release CardFactory gives it.
+  const deployed = async (spender: Address) => {
+    const code = await client.getCode({ address: spender })
+    return Boolean(code && code !== '0x')
+  }
+  const factories = await Promise.all(
+    (profile.zoneRouter?.spenders ?? []).map(async (spender) =>
+      forthcoming(spender) && !(await deployed(spender))
+        ? cardProgram!.routerFactory
+        : spenderRouterFactory(client, spender),
+    ),
+  )
+  return { forthcoming, factories }
+}
+
+/**
+ * The factory a Spend router deploys through: the one every spender binds, since a spender refuses
+ * any other factory's routers; undefined without spenders or when they disagree.
+ */
+async function spenderBoundFactory(
+  client: Pick<PublicClient, 'getCode' | 'readContract'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address> = {},
+) {
+  if (!profile.zoneRouter?.spenders?.length) return undefined
+  const { factories } = await spenderFactories(client, profile, outputs)
+  const [first] = factories
+  return first && factories.every((factory) => factory === first) ? first : undefined
+}
+
+/**
+ * Before any key is used: the Zone is registered (discovery reads it), the router's factory (recorded,
+ * else the one its spenders bind, else the released one, which must be this build's) and every spender
+ * hold code and the factory answers as one, every spender takes `spendFrom` from that factory's
+ * routers, and an Earn binding's route matches the vault asset as `ZoneRouter`'s constructor requires.
+ */
+async function preflightZoneRouter(
+  client: Pick<PublicClient, 'getCode' | 'readContract'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address> = {},
+) {
+  const router = profile.zoneRouter
+  if (!router) return
+  const { forthcoming, factories } = await spenderFactories(client, profile, outputs)
+  const bound = await spenderBoundFactory(client, profile, outputs)
+  const factory =
+    outputs.zoneRouterFactory ??
+    bound ??
+    (router.spenders?.length ? undefined : zoneRouterFactory(profile, outputs))
+  if (!factory) {
+    const missing = factories.findIndex((spenderFactory) => !spenderFactory)
+    if (missing >= 0)
+      throw new Error(
+        `zoneRouter.spenders[${missing}] ${router.spenders![missing]} reports no ROUTER_FACTORY`,
+      )
+    throw new Error(
+      `zoneRouter.spenders bind different ZoneRouterFactories (${[...new Set(factories)].join(', ')}), so no router can spend through all of them`,
+    )
+  }
+  // A spender refuses `spendFrom` from any other factory's router.
+  for (const [index, spender] of (router.spenders ?? []).entries()) {
+    const path = `zoneRouter.spenders[${index}] ${spender}`
+    const spenderFactory = factories[index]
+    if (!spenderFactory) throw new Error(`${path} reports no ROUTER_FACTORY`)
+    if (spenderFactory !== getAddress(factory)) {
+      throw new Error(
+        `${path} takes spendFrom only from routers of ZoneRouterFactory ${spenderFactory}, not the router's ${factory}`,
+      )
+    }
+  }
+  if (!outputs.zoneRouter) {
+    // A router not deployed yet is source verified against this build, so only this build's factory
+    // can create one; a registry naming another build's factory would also replace routers forever.
+    const expected = routerFactoryRelease.address()
+    if (getAddress(factory) !== expected)
+      throw new Error(
+        bound
+          ? `zoneRouter.spenders bind ZoneRouterFactory ${factory}, not this build's ${expected}, so a new router through it could not be source verified; list spenders bound to this build's release factory`
+          : `Released ZoneRouterFactory ${factory} is not this build's ${expected}; run pnpm release and record its registry entry first`,
+      )
+  }
   await requireCode(client, {
     ...Object.fromEntries(
       (router.spenders ?? [])
         .map((spender, index) => [`spender ${index}`, spender] as const)
         .filter(([, spender]) => !forthcoming(spender)),
     ),
-    ...(router.factory ? { ZoneRouterFactory: router.factory } : {}),
+    ZoneRouterFactory: factory,
   } as Record<string, Address>)
-  if (router.factory) {
-    await client.readContract({
-      address: router.factory,
-      abi: zoneRouterFactoryAbi,
-      functionName: 'isRouter',
-      args: [zeroAddress],
-    })
-  }
-  // A spender refuses `spendFrom` from any other factory's router, so a router through a factory this
-  // deployment creates could never spend through a spender already bound to another.
-  for (const [index, spender] of (router.spenders ?? []).entries()) {
-    const bound = forthcoming(spender)
-      ? cardProgram!.routerFactory
-      : await spenderRouterFactory(client, spender)
-    const path = `zoneRouter.spenders[${index}] ${spender}`
-    if (!bound) throw new Error(`${path} reports no ROUTER_FACTORY`)
-    if (!router.factory) {
-      throw new Error(
-        `${path} takes spendFrom only from routers of ZoneRouterFactory ${bound}; set zoneRouter.factory to it`,
-      )
-    }
-    if (bound !== getAddress(router.factory)) {
-      throw new Error(
-        `${path} takes spendFrom only from routers of ZoneRouterFactory ${bound}, not zoneRouter.factory ${router.factory}`,
-      )
-    }
-  }
+  await client.readContract({
+    address: factory,
+    abi: zoneRouterFactoryAbi,
+    functionName: 'isRouter',
+    args: [zeroAddress],
+  })
   if (router.earn) {
     await preflightRouterRoute(client, profile, {
       privateAsset: router.earn.privateAsset,

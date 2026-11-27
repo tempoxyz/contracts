@@ -971,13 +971,15 @@ async function creationTransactionFor(
   address: Address,
   context: VerificationContext,
 ) {
+  const step = deploymentStep(action)
+  // A release contract's address commits to its creation code, so it carries no creation transaction.
+  if (step.execution === 'foundry' && step.source?.release) return undefined
   const transactions = options.record.actions[action]?.transactions
   if (!transactions || transactions.length !== 1 || !/^0x[0-9a-fA-F]{64}$/.test(transactions[0]!))
     throw new Error(
       `Missing or ambiguous creation transaction for ${action}. Recover its original creation receipt before verifying; source matches cannot replace creation evidence.`,
     )
   const transaction = transactions[0]!
-  const step = deploymentStep(action)
   const factory =
     step.execution === 'foundry'
       ? step.creationEvent?.(options.profile, options.record.addresses as Record<string, Address>)

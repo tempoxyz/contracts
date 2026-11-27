@@ -6,8 +6,8 @@ import { Script, console2 } from "forge-std/Script.sol";
 import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../../src/zone/ZoneRouterFactory.sol";
 
-/// @notice The profile lifecycle's `deploy-zone-router` step: the factory's router for one mode. The
-///         factory returns an existing router for the mode instead of deploying it again.
+/// @notice The profile lifecycle's `deploy-zone-router` step: the released ZoneRouterFactory's router for one
+///         mode. The factory returns an existing router for the mode instead of deploying it again.
 contract DeployZoneRouterScript is Script {
     /// @notice The deployment step's typed input.
     struct Input {
@@ -34,6 +34,7 @@ contract DeployZoneRouterScript is Script {
             revert NotFactoryRouter(address(router));
         }
         _verifyMode(router, input.mode);
+        vm.serializeAddress("deployment", "zoneRouterFactory", address(input.factory));
         vm.writeJson(
             vm.serializeAddress("deployment", "zoneRouter", address(router)), input.outputPath, ".latestOutputs"
         );

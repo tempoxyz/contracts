@@ -26,10 +26,10 @@ implements `ISpender` from here; nothing in `src/zone/` imports from `src/spend/
     factory it binds.
   - A card program's `CardSpender` implements the same interface in [`src/spend/`](../../src/spend/).
 - [`ISpender`](../../src/interfaces/zone/ISpender.sol): what a spender implements.
-- [`script/zone/deploy/`](../../script/zone/deploy/): the steps `pnpm earn deploy` runs here for a
-  profile's [`zoneRouter`](../../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which
-  the [Zone Router Release](../deployment/deployment.md#zone-router-releases) workflow runs for the
-  factory, a `SendSpender` and routers.
+- [`script/zone/deploy/`](../../script/zone/deploy/): the step `pnpm earn deploy` runs here for a
+  profile's [`zoneRouter`](../../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`,
+  which [`pnpm release`](../deployment/deployment.md#releases) runs for the factory and the
+  `SendSpender`.
 - [`test/zone/`](../../test/zone/): the router, factory and spender tests.
 
 ## Running it

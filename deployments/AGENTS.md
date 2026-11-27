@@ -14,6 +14,9 @@ Use [the package reference](README.md), [profiles](../profiles/README.md), and t
 - Before broadcast, match locally compiled shared factory and implementation runtimes to the
   reviewed release; nonempty code is not sufficient. Never invent success or downgrade a
   verification failure.
+- Shared ownerless contracts deploy only through `pnpm release` (`core/release.ts`), one registry
+  key each in `core/releases.ts`. Profile steps read them with `releasedContract` and fail when the
+  registry lacks one; never add a profile step or field that creates or overrides a shared contract.
 - Never pass authority keys to Forge. Use the typed authority steps or emit a handoff for the actual
   owner, then verify completion onchain when resuming.
 - The lifecycle owns reconciliation and verified records; the stack a hosted E2E run builds from a

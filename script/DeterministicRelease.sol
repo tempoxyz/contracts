@@ -9,7 +9,7 @@ import { Script } from "forge-std/Script.sol";
 ///         network and a contract that already exists is reused instead of created again.
 /// @dev Release contracts are ownerless, so anyone creating one first at its address only pays its fee.
 ///      Deployments tooling predicts the same addresses (`releaseSalt` in
-///      deployments/core/factory-release.ts).
+///      deployments/core/release.ts).
 abstract contract DeterministicRelease is Script {
     bytes32 internal constant RELEASE_SALT = keccak256("tempoxyz/earn shared factory release");
 

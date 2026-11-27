@@ -96,8 +96,12 @@ describe('retained Zone router ABI compatibility', () => {
         verification: 'chain' as const,
         transactions: [`0x${'a'.repeat(64)}` as const],
       }
+      // A record from before the release still carries the retired factory component and its step.
       const committed = {
-        componentDeploymentIntentHashes: componentDeploymentIntentHashes(profile),
+        componentDeploymentIntentHashes: {
+          ...componentDeploymentIntentHashes(profile),
+          zoneRouterFactory: `0x${'f'.repeat(64)}` as const,
+        },
         addresses: outputs,
         actions: { 'deploy-zone-router-factory': completed, 'deploy-zone-router': completed },
       }
@@ -105,7 +109,7 @@ describe('retained Zone router ABI compatibility', () => {
       const restored = restorePendingDeployment(profilePath, profile, committed)
       expect(restored.outputs.zoneRouter).toBe(outputs.zoneRouter)
       expect(restored.outputs.zoneRouterFactory).toBe(outputs.zoneRouterFactory)
-      expect(restored.actions).toEqual(committed.actions)
+      expect(restored.actions).toEqual({ 'deploy-zone-router': completed })
       const pending = readFileSync(pendingDeploymentPath(profilePath), 'utf8')
       rpc.client = chain(new ContractFunctionZeroDataError({ functionName: 'spenders' }))
       await expect(
@@ -163,44 +167,17 @@ describe('router code identity', () => {
       [outputs.zoneRouter]: `0x601160cc${tail('11')}`,
     })
     expect(await replacedComponents(changed, profile, { addresses: outputs }, withTail)).toEqual(
-      new Set(['zoneRouterFactory', 'zoneRouter']),
+      new Set(['zoneRouter']),
     )
   })
 
-  test('keeps a factory whose embedded router differs only in its metadata', async () => {
-    const tail = (hash: string) => `a2646970667358221220${hash.repeat(32)}65736f6c6172430003010034`
-    // The factory runtime ends with the router's creation code, then its own tail, each behind INVALID.
-    const factory = (child: string, hashes: [string, string]) =>
-      `0x60aa60bb${child}fe${tail(hashes[0])}fe${tail(hashes[1])}` as const
-    const build = (contract: string) => ({
-      ...compile(),
-      bytecode: contract.endsWith(':ZoneRouterFactory')
-        ? factory('6001', ['11', '22'])
-        : (`0x60aa60bb${tail('66')}` as const),
-    })
+  test('replaces a router built from other code, but never the released factory', async () => {
     const client = deployedAt({
-      [outputs.zoneRouterFactory]: factory('6001', ['33', '44']).replace('60aa', '60ff'),
-      [outputs.zoneRouter]: `0x601160bb${tail('55')}`,
-    })
-    expect(await replacedComponents(client, profile, { addresses: outputs }, build)).toEqual(
-      new Set(),
-    )
-    const changed = deployedAt({
-      [outputs.zoneRouterFactory]: factory('6002', ['11', '22']),
-      [outputs.zoneRouter]: `0x601160bb${tail('55')}`,
-    })
-    expect(await replacedComponents(changed, profile, { addresses: outputs }, build)).toEqual(
-      new Set(['zoneRouterFactory']),
-    )
-  })
-
-  test('replaces a router built from other code with the components its deployment depends on', async () => {
-    const client = deployedAt({
-      [outputs.zoneRouterFactory]: '0x60ff60bb',
+      [outputs.zoneRouterFactory]: '0x60ff60cc',
       [outputs.zoneRouter]: '0x601160cc',
     })
     expect(await replacedComponents(client, profile, { addresses: outputs }, compile)).toEqual(
-      new Set(['zoneRouterFactory', 'zoneRouter']),
+      new Set(['zoneRouter']),
     )
   })
 
@@ -218,13 +195,15 @@ describe('router code identity', () => {
         {
           componentDeploymentIntentHashes: componentDeploymentIntentHashes(profile),
           addresses: outputs,
-          actions: { 'deploy-zone-router-factory': completed, 'deploy-zone-router': completed },
+          actions: { 'deploy-zone-router': completed },
         },
         new Set(['zoneRouter']),
       )
       expect(restored.outputs.zoneRouter).toBeUndefined()
-      expect(restored.outputs.zoneRouterFactory).toBe(outputs.zoneRouterFactory)
-      expect(restored.actions).toEqual({ 'deploy-zone-router-factory': completed })
+      // The factory is recorded beside the router; its replacement records the released one again.
+      expect(restored.outputs.zoneRouterFactory).toBeUndefined()
+      expect(restored.outputs.earnVault).toBe(outputs.earnVault)
+      expect(restored.actions).toEqual({})
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

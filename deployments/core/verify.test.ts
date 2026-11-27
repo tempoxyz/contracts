@@ -3,6 +3,7 @@ import {
   encodeAbiParameters,
   encodeEventTopics,
   getAbiItem,
+  getAddress,
   keccak256,
   stringToBytes,
   type Abi,
@@ -10,7 +11,12 @@ import {
   type Log,
   type Hex,
 } from 'viem'
-import { earnFactoryAbi, erc4626EngineFactoryAbi, zoneRouterFactoryAbi } from '../abis/index.js'
+import {
+  cardFactoryAbi,
+  earnFactoryAbi,
+  erc4626EngineFactoryAbi,
+  zoneRouterFactoryAbi,
+} from '../abis/index.js'
 
 import { parseEarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
@@ -210,7 +216,8 @@ function run(
   }
 }
 
-function namedFactoryRun() {
+/** A router created through the released ZoneRouterFactory, recorded as its external address. */
+function releasedFactoryRun() {
   const factory = address('fac')
   const router = address('70')
   const runtime = dependencies()
@@ -242,7 +249,7 @@ function namedFactoryRun() {
     root: '/checkout',
     profile: {
       ...profile,
-      zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')], factory },
+      zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')] },
     },
     record: {
       actions: {
@@ -253,7 +260,7 @@ function namedFactoryRun() {
           transactions: [transaction],
         },
       },
-      addresses: { ...addresses, zoneRouter: router },
+      addresses: { ...addresses, zoneRouterFactory: factory, zoneRouter: router },
     },
   })
   return { options, runtime, factoryContract }
@@ -747,12 +754,7 @@ describe('deployment source verification', () => {
         chainId: 42431,
         owner: address('a'),
         engine: { kind: 'veda', address: engine },
-        zoneRouter: {
-          zoneId: 7,
-          ops: ['spend'],
-          spenders: [address('5e')],
-          factory: address('fac'),
-        },
+        zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')] },
       },
       { deployer: address('9'), factories: { earn: coreFactory, erc4626Engine: address('c') } },
     )
@@ -822,7 +824,7 @@ describe('deployment source verification', () => {
                 transactions: [transaction],
               },
             },
-            addresses: { ...addresses, zoneRouter: router },
+            addresses: { ...addresses, zoneRouterFactory: address('fac'), zoneRouter: router },
           },
         }),
         runtime,
@@ -852,10 +854,132 @@ describe('deployment source verification', () => {
     ).rejects.toThrow('Verifier source paths do not match the complete compiler input manifest')
   })
 
+  test('source verifies a release step output without a creation transaction', async () => {
+    const provider = address('c1')
+    const program = address('c2')
+    const cardFactory = address('cf')
+    const cardRouterFactory = address('cd')
+    const spenderFactory = address('5f')
+    const spenderId = `0x${'0'.repeat(63)}1` as const
+    const programCreation = `0x${'2'.repeat(64)}` as const
+    const providerArgs = encodeAbiParameters(
+      [{ type: 'address' }, { type: 'bytes32' }],
+      [spenderFactory, spenderId],
+    )
+    const verified = (target: Address, contract: string, transactionHash?: Hex) => {
+      const sourcePath = contract.slice(0, contract.lastIndexOf(':'))
+      return {
+        address: target,
+        fullyQualifiedName: contract,
+        match: 'exact_match',
+        name: contract.slice(contract.lastIndexOf(':') + 1),
+        sources: { [sourcePath]: { content: `canonical:${sourcePath}` } },
+        ...(transactionHash ? { transactionHash } : {}),
+      }
+    }
+    const runtime = dependencies()
+    let providerLookups = 0
+    runtime.fetch = vi.fn(async (input) => {
+      const url = String(input).toLowerCase()
+      if (url.endsWith('/v2/verify/job'))
+        return Response.json({
+          isJobCompleted: true,
+          contract: { address: provider, match: 'exact_match' },
+          error: null,
+        })
+      if (url.includes(provider.toLowerCase()))
+        return ++providerLookups === 1
+          ? new Response('{}', { status: 404 })
+          : Response.json(
+              verified(provider, 'src/spend/providers/bridge/BridgeProvider.sol:BridgeProvider'),
+            )
+      if (url.includes(program.toLowerCase()))
+        return Response.json(
+          verified(program, 'src/spend/CardSpender.sol:CardSpender', programCreation),
+        )
+      if (url.includes(cardFactory.toLowerCase()))
+        return Response.json(verified(cardFactory, 'src/spend/CardFactory.sol:CardFactory'))
+      return dependencies().fetch(input)
+    }) as unknown as typeof fetch
+    runtime.spawn = vi.fn(() => ({
+      status: 0,
+      stdout: '',
+      stderr: 'Verification Job ID: `job`',
+    })) as unknown as typeof runtime.spawn
+    const rpc = client()
+    const receipt = rpc.getTransactionReceipt
+    rpc.getTransactionReceipt = vi.fn(async (parameters?: { hash: Hex }) =>
+      parameters?.hash === programCreation
+        ? {
+            status: 'success' as const,
+            transactionHash: programCreation,
+            contractAddress: null,
+            logs: [
+              creationLog(
+                cardFactoryAbi,
+                'ProgramDeployed',
+                cardFactory,
+                { program, programId: spenderId, provider },
+                [],
+              ),
+            ],
+          }
+        : receipt(),
+    ) as typeof receipt
+    const completed = {
+      completedAt: '2026-01-01T00:00:00.000Z',
+      verification: 'broadcast' as const,
+    }
+    const source = await verifyDeploymentSources(
+      run({
+        client: rpc as never,
+        profile: { ...profile, cards: { provider: 'bridge', spenderFactory, spenderId } },
+        record: {
+          actions: {
+            ...actions,
+            // The provider sits at its release address, which commits to its creation code.
+            'deploy-card-provider': { ...completed, transactions: [] },
+            'deploy-card-program': { ...completed, transactions: [programCreation] },
+          },
+          addresses: {
+            ...addresses,
+            cardRouterFactory,
+            cardFactory,
+            cardProvider: provider,
+            cardProgram: program,
+          },
+        },
+      }),
+      runtime,
+    )
+    expect(source.contracts.cardProvider).toMatchObject({
+      kind: 'source',
+      name: 'BridgeProvider',
+      match: 'exact_match',
+    })
+    expect(source.contracts.cardProvider).not.toHaveProperty('creationFactory')
+    expect(source.contracts.cardProgram).toMatchObject({
+      kind: 'source',
+      name: 'CardSpender',
+      creationFactory: { address: getAddress(cardFactory), name: 'CardFactory' },
+    })
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    const [, arguments_] = vi.mocked(runtime.spawn).mock.calls[0]!
+    expect(arguments_).toEqual(
+      expect.arrayContaining([
+        provider,
+        'src/spend/providers/bridge/BridgeProvider.sol:BridgeProvider',
+        '--constructor-args',
+        providerArgs,
+      ]),
+    )
+    expect(arguments_).not.toContain('--creation-transaction-hash')
+  })
+
   test.each(['deployment', 'recorded'] as const)(
-    'rejects a noncanonical named factory even when its event and verifier hash agree: %s',
+    'rejects a released factory with noncanonical source even when its event and verifier hash agree: %s',
     async (entry) => {
-      const { options, runtime, factoryContract } = namedFactoryRun()
+      const { options, runtime, factoryContract } = releasedFactoryRun()
       options.record.source = (await verifyDeploymentSources(
         options,
         runtime,
@@ -885,7 +1009,7 @@ describe('deployment source verification', () => {
   test.each([false, true])(
     'pins external factory admission across checkout changes (repair=%s)',
     async (resubmit) => {
-      const { options, runtime } = namedFactoryRun()
+      const { options, runtime } = releasedFactoryRun()
       const source = await verifyDeploymentSources(options, runtime)
       expect(source.contracts.zoneRouter).toMatchObject({
         creationFactory: {
@@ -916,7 +1040,7 @@ describe('deployment source verification', () => {
   )
 
   test('allows stronger external factory matches but rejects downgrade and identity changes', async () => {
-    const { options, runtime, factoryContract } = namedFactoryRun()
+    const { options, runtime, factoryContract } = releasedFactoryRun()
     factoryContract.match = 'match'
     options.record.source = (await verifyDeploymentSources(
       options,
@@ -953,7 +1077,7 @@ describe('deployment source verification', () => {
   })
 
   test('requires canonical admission for records without factory evidence without rewriting them', async () => {
-    const { options, runtime } = namedFactoryRun()
+    const { options, runtime } = releasedFactoryRun()
     options.record.source = (await verifyDeploymentSources(
       options,
       runtime,
@@ -1315,7 +1439,7 @@ describe('source verifier admission', () => {
   )
 
   test('preserves nested factory evidence through a pending-source completion and upgrade', async () => {
-    const { options, runtime, factoryContract } = namedFactoryRun()
+    const { options, runtime, factoryContract } = releasedFactoryRun()
     factoryContract.match = 'match'
     const source = await verifyDeploymentSources(options, runtime)
     options.record.source = {

@@ -38,6 +38,7 @@ import * as Runtime from '../chain/runtime.js'
 import * as Inspection from './inspection.js'
 import * as Provenance from './provenance.js'
 import * as Reconcile from './reconcile.js'
+import * as Releases from './releases.js'
 import * as Verify from './verify.js'
 import { loadPendingDeployment, savePendingDeployment } from './pending.js'
 import { resolveEarnFactoryRelease, sharedFactoryRuntimeCodeHashes } from './releases.js'
@@ -878,9 +879,9 @@ describe('retained historical direct creation', () => {
   })
 })
 
-describe('retained factory creation across consumer changes', () => {
+describe('released router factory across mode changes', () => {
   test.each([false, true])(
-    'keeps the lifecycle-created factory proof across a mode change (verifier outage: %s)',
+    'admits the new router through the released factory across a mode change (verifier outage: %s)',
     async (outage) => {
       const fixture = pendingSourceDeployment({ retainedRouter: true })
       try {
@@ -892,6 +893,15 @@ describe('retained factory creation across consumer changes', () => {
           record,
         })
         const verified = { ...record, source: { ...record.source, ...source } }
+        // The released factory is an external address: admitted for its routers, never a step output.
+        expect(verified.source.contracts.zoneRouterFactory).toBeUndefined()
+        const admitted = verified.source.contracts.zoneRouter
+        if (admitted?.kind !== 'source') throw new Error('Missing router source')
+        expect(admitted.creationFactory).toMatchObject({
+          address: fixture.releasedFactory,
+          name: 'ZoneRouterFactory',
+          match: 'exact_match',
+        })
         publishProfileDeploymentRecord(
           fixture.options.profilePath,
           fixture.options.profile,
@@ -908,31 +918,30 @@ describe('retained factory creation across consumer changes', () => {
         expect(
           fixture.verification.mock.calls[0]![0].record.source!.contracts.zoneRouter,
         ).toBeUndefined()
-        expect(
-          fixture.verification.mock.calls[0]![0].record.source!.contracts.zoneRouterFactory,
-        ).toEqual(verified.source.contracts.zoneRouterFactory)
         if (outage) {
-          expect(fixture.read().source.contracts.zoneRouterFactory).toEqual(
-            verified.source.contracts.zoneRouterFactory,
-          )
+          expect(fixture.read().source.contractVerification).toBe('pending')
+          expect(fixture.read().source.contracts.zoneRouter).toBeUndefined()
           rmSync(pendingDeploymentPath(fixture.options.profilePath))
           fixture.dependencies.fetch.mockImplementation(fetch)
-          const readSource = fixture.dependencies.readSource.getMockImplementation()!
-          fixture.dependencies.readSource.mockImplementation((path) =>
-            path.endsWith('/ZoneRouterFactory.sol')
-              ? 'today’s different factory source'
-              : readSource(path),
-          )
           expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
         }
         const retained = fixture.read()
         expect(retained.addresses.zoneRouter).toBe(fixture.nextRouter)
-        expect(retained.addresses.zoneRouterFactory).toBe(record.addresses.zoneRouterFactory)
-        expect(retained.actions['deploy-zone-router-factory']).toEqual(
-          record.actions['deploy-zone-router-factory'],
-        )
-        expect(retained.source.contracts.zoneRouterFactory).toEqual(
-          verified.source.contracts.zoneRouterFactory,
+        expect(retained.addresses.zoneRouterFactory).toBe(fixture.releasedFactory)
+        expect(retained.actions['deploy-zone-router']!.transactions).toEqual([
+          fixture.nextRouterCreation,
+        ])
+        expect(retained.source.contracts.zoneRouterFactory).toBeUndefined()
+        expect(retained.source.contracts.zoneRouter).toMatchObject({
+          kind: 'source',
+          creationFactory: admitted.creationFactory,
+        })
+        // The router pins the factory identity it was admitted with, across checkout changes.
+        const readSource = fixture.dependencies.readSource.getMockImplementation()!
+        fixture.dependencies.readSource.mockImplementation((path) =>
+          path.endsWith('/ZoneRouterFactory.sol')
+            ? 'today’s different factory source'
+            : readSource(path),
         )
         const published = readFileSync(fixture.recordPath, 'utf8')
         expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
@@ -945,16 +954,35 @@ describe('retained factory creation across consumer changes', () => {
     },
   )
 
-  test.each([
-    'factory source',
-    'factory input',
-    'factory sender',
-    'factory receipt',
-    'new router source',
-    'action',
-    'address',
-    'intent',
-  ] as const)(
+  test('tolerates a record carrying the retired zoneRouterFactory component and its action', async () => {
+    const fixture = pendingSourceDeployment({ retainedRouter: true })
+    try {
+      const record = structuredClone(fixture.record)
+      record.actions['deploy-core']!.transactions = [fixture.creation]
+      const source = await fixture.verifySources({
+        ...fixture.options,
+        client: fixture.chain as never,
+        record,
+      })
+      const verified = { ...record, source: { ...record.source, ...source } }
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, verified)
+      const legacy = JSON.parse(readFileSync(fixture.recordPath, 'utf8'))
+      legacy.componentDeploymentIntentHashes.zoneRouterFactory = '0'.repeat(64)
+      // Its receipt is one the record already holds, so the deployment block it bounds is unchanged.
+      legacy.actions['deploy-zone-router-factory'] = verified.actions['deploy-core']
+      writeFileSync(fixture.recordPath, JSON.stringify(legacy))
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      const retained = fixture.read()
+      expect(retained.addresses.zoneRouter).toBe(record.addresses.zoneRouter)
+      expect(retained.addresses.zoneRouterFactory).toBe(fixture.releasedFactory)
+      expect(retained.actions).toMatchObject(verified.actions)
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test.each(['factory source', 'new router source', 'address'] as const)(
     'rejects changed %s evidence rather than carrying the previous proof',
     async (corruption) => {
       const fixture = pendingSourceDeployment({ retainedRouter: true })
@@ -972,29 +1000,12 @@ describe('retained factory creation across consumer changes', () => {
           fixture.options.profile,
           verified,
         )
-        if (corruption === 'intent') {
-          verified.componentDeploymentIntentHashes.zoneRouterFactory = '0'.repeat(64)
-          writeFileSync(fixture.recordPath, JSON.stringify(verified))
-        }
         fixture.changeRouterMode()
         const published = readFileSync(fixture.recordPath, 'utf8')
         const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
-        if (corruption === 'factory input') fixture.factoryTransaction.input = '0x6000'
-        if (corruption === 'factory sender') fixture.factoryTransaction.from = zeroAddress
-        if (corruption === 'factory receipt') {
-          const receipt = fixture.chain.getTransactionReceipt.getMockImplementation()!
-          fixture.chain.getTransactionReceipt.mockImplementation(async (parameters) => ({
-            ...(await receipt(parameters)),
-            ...(parameters.hash === fixture.factoryTransaction.hash
-              ? { contractAddress: zeroAddress }
-              : {}),
-          }))
-        }
         if (corruption === 'factory source' || corruption === 'new router source') {
           const target =
-            corruption === 'factory source'
-              ? record.addresses.zoneRouterFactory!
-              : fixture.nextRouter
+            corruption === 'factory source' ? fixture.releasedFactory : fixture.nextRouter
           const fetch = fixture.dependencies.fetch.getMockImplementation()!
           fixture.dependencies.fetch.mockImplementation(async (input) => {
             const response = await fetch(input)
@@ -1005,54 +1016,35 @@ describe('retained factory creation across consumer changes', () => {
             })
           })
         }
-        if (corruption === 'action' || corruption === 'address' || corruption === 'intent') {
+        if (corruption === 'address') {
+          // A source-verified factory that did not emit the router's creation event proves nothing.
+          fixture.verifiedContracts.set(
+            fixture.otherFactory.toLowerCase(),
+            'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
+          )
           const prepare = Reconcile.prepareLifecycleStep
           vi.spyOn(Reconcile, 'prepareLifecycleStep').mockImplementation(async (parameters) => {
-            // Re-present the old creation after its declared intent changed; it must be admitted anew.
-            if (corruption === 'intent')
-              return {
-                kind: 'complete',
-                pending: {
-                  ...loadPendingDeployment(parameters.profilePath, parameters.profile),
-                  actions: record.actions,
-                  outputs: record.addresses as Record<string, Hex>,
-                },
-              }
             const result = await prepare(parameters)
-            if (result.kind === 'complete') {
-              if (corruption === 'address')
-                result.pending.outputs.zoneRouterFactory = getAddress(`0x${'f'.repeat(40)}`)
-              else
-                result.pending.actions['deploy-zone-router-factory'] = {
-                  ...result.pending.actions['deploy-zone-router-factory']!,
-                  completedAt: '2026-02-01T00:00:00.000Z',
-                }
-            }
+            if (result.kind === 'complete')
+              result.pending.outputs.zoneRouterFactory = fixture.otherFactory
             return result
           })
         }
         await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
-          corruption === 'action' || corruption === 'intent'
-            ? /unexpected creation input/
-            : corruption === 'address' || corruption === 'factory receipt'
-              ? /does not prove creation/
-              : corruption === 'factory input'
-                ? /unexpected creation input/
-                : corruption === 'factory sender'
-                  ? /expected direct creation/
-                  : /source/,
+          corruption === 'address'
+            ? /does not prove creation/
+            : corruption === 'factory source'
+              ? /canonical source src\/zone\/ZoneRouterFactory\.sol/
+              : /canonical source src\/zone\/ZoneRouter\.sol/,
         )
         // A new output is durably pending before source admission; it never acquires the old router's proof.
-        if (corruption === 'new router source') {
+        if (corruption === 'address')
+          expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        else {
           expect(fixture.read().source.contractVerification).toBe('pending')
           expect(fixture.read().source.contracts.zoneRouter).toBeUndefined()
-          expect(fixture.read().source.contracts.zoneRouterFactory).toEqual(
-            verified.source.contracts.zoneRouterFactory,
-          )
-        } else expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
-        if (corruption === 'action' || corruption === 'intent')
-          expect(compiler).toHaveBeenCalledOnce()
-        else expect(compiler).not.toHaveBeenCalled()
+        }
+        expect(compiler).not.toHaveBeenCalled()
         fixture.assertNoBroadcast()
       } finally {
         fixture.cleanup()
@@ -1072,10 +1064,13 @@ function pendingSourceDeployment({
   const creation: Hex = `0x${'ab'.repeat(32)}`
   const controllerCreation: Hex = `0x${'ca'.repeat(32)}`
   const distributorCreation: Hex = `0x${'da'.repeat(32)}`
-  const factoryCreation: Hex = `0x${'fa'.repeat(32)}`
+  const releaseCreation: Hex = `0x${'fa'.repeat(32)}`
   const routerCreation: Hex = `0x${'fb'.repeat(32)}`
   const nextRouterCreation: Hex = `0x${'fc'.repeat(32)}`
   const nextRouter = address('b2')
+  // The registry's ZoneRouterFactory: `pnpm release` creates it, so no profile action carries its creation.
+  const releasedFactory = address('f0')
+  const otherFactory = address('f1')
   let routerChanged = false
   const historicalBytecode = '0x6001'
   const engineCreation: Hex = `0x${'ac'.repeat(32)}`
@@ -1094,7 +1089,7 @@ function pendingSourceDeployment({
     asset: address('6'),
     ...(retainedRouter
       ? {
-          zoneRouterFactory: address('f0'),
+          zoneRouterFactory: releasedFactory,
           zoneRouter: address('b1'),
           zoneRouterPortal: address('b0'),
         }
@@ -1205,19 +1200,17 @@ function pendingSourceDeployment({
           completedAt: '2026-01-01T00:00:00.000Z',
           verification: 'chain',
           transactions:
-            id === 'deploy-zone-router-factory'
-              ? [factoryCreation]
-              : id === 'deploy-zone-router'
-                ? [routerCreation]
-                : id === 'deploy-contribution-controller'
-                  ? [controllerCreation]
-                  : id === 'deploy-merkle-distributor'
-                    ? [distributorCreation]
-                    : id === 'bind-core'
-                      ? [binding]
-                      : provisionEngine && id === 'deploy-core'
-                        ? [creation]
-                        : [],
+            id === 'deploy-zone-router'
+              ? [routerCreation]
+              : id === 'deploy-contribution-controller'
+                ? [controllerCreation]
+                : id === 'deploy-merkle-distributor'
+                  ? [distributorCreation]
+                  : id === 'bind-core'
+                    ? [binding]
+                    : provisionEngine && id === 'deploy-core'
+                      ? [creation]
+                      : [],
         },
       ]),
     ),
@@ -1294,12 +1287,6 @@ function pendingSourceDeployment({
     input:
       `${historicalBytecode}${encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [addresses.earnVault, profile.owner]).slice(2)}` as Hex,
   }
-  const factoryTransaction = {
-    hash: factoryCreation,
-    from: profile.deployer,
-    to: null,
-    input: historicalBytecode as Hex,
-  }
   const routerEvent = getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' })
   const routerModeData = (hash: Hex) =>
     encodeAbiParameters(
@@ -1321,7 +1308,7 @@ function pendingSourceDeployment({
     transactionHash: hash,
     logs: [
       {
-        address: addresses.zoneRouterFactory!,
+        address: releasedFactory,
         removed: false,
         topics: encodeEventTopics({
           abi: zoneRouterFactoryAbi,
@@ -1337,7 +1324,6 @@ function pendingSourceDeployment({
   })
   const chain = {
     getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
-      if (hash === factoryCreation) return factoryTransaction
       if (hash === controllerCreation) return minedTransaction
       const step = deploymentStep('deploy-merkle-distributor')
       if (step.execution !== 'foundry' || !step.source)
@@ -1356,7 +1342,7 @@ function pendingSourceDeployment({
       async ({ address: target }: { address: string }): Promise<{ transactionHash: Hex }[]> => [
         {
           transactionHash:
-            target === addresses.zoneRouterFactory
+            target === releasedFactory
               ? routerChanged
                 ? nextRouterCreation
                 : routerCreation
@@ -1370,30 +1356,23 @@ function pendingSourceDeployment({
       blockNumber === 9n ? '0x' : code(address),
     ),
     getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) =>
-      hash === factoryCreation
-        ? {
-            ...receipt,
-            transactionHash: hash,
-            contractAddress: addresses.zoneRouterFactory,
-            logs: [],
-          }
-        : hash === routerCreation || hash === nextRouterCreation
-          ? routerReceipt(hash)
-          : hash === controllerCreation || hash === distributorCreation
-            ? {
-                ...receipt,
-                transactionHash: hash,
-                contractAddress:
-                  hash === controllerCreation
-                    ? addresses.earnContributionController
-                    : addresses.earnMerkleRewardDistributor,
-                logs: [],
-              }
-            : hash === engineCreation
-              ? engineReceipt
-              : hash === creation
-                ? receipt
-                : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
+      hash === routerCreation || hash === nextRouterCreation
+        ? routerReceipt(hash)
+        : hash === controllerCreation || hash === distributorCreation
+          ? {
+              ...receipt,
+              transactionHash: hash,
+              contractAddress:
+                hash === controllerCreation
+                  ? addresses.earnContributionController
+                  : addresses.earnMerkleRewardDistributor,
+              logs: [],
+            }
+          : hash === engineCreation
+            ? engineReceipt
+            : hash === creation
+              ? receipt
+              : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
     ),
     getStorageAt: vi.fn(async () => `0x${'0'.repeat(24)}${vaultImplementation.slice(2)}`),
     readContract: vi.fn(
@@ -1417,7 +1396,9 @@ function pendingSourceDeployment({
             sequencerAt: address('b3'),
           }
           if (functionName in zoneReads) return zoneReads[functionName]
-          if (target === addresses.zoneRouterFactory)
+          // The mode's spender binds the released factory.
+          if (functionName === 'ROUTER_FACTORY') return releasedFactory
+          if (target === releasedFactory || target === otherFactory)
             return functionName === 'isRouter'
               ? args?.[0] !== zeroAddress
               : routerChanged
@@ -1486,10 +1467,12 @@ function pendingSourceDeployment({
     )
   }
   if (retainedRouter) {
-    contracts.set(
-      addresses.zoneRouterFactory!.toLowerCase(),
-      'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
-    )
+    contracts.set(releasedFactory.toLowerCase(), 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory')
+    vi.spyOn(Releases, 'releasedContract').mockImplementation((chainId, key) => {
+      if (chainId !== profile.chainId || key !== 'zoneRouterFactory')
+        throw new Error(`Unexpected release lookup ${key}`)
+      return releasedFactory
+    })
     contracts.set(addresses.zoneRouter!.toLowerCase(), 'src/zone/ZoneRouter.sol:ZoneRouter')
     contracts.set(nextRouter.toLowerCase(), 'src/zone/ZoneRouter.sol:ZoneRouter')
     // Activation owns live access policy, not creation or retained-source admission.
@@ -1509,8 +1492,8 @@ function pendingSourceDeployment({
         match: 'exact_match',
         name,
         transactionHash:
-          target === addresses.zoneRouterFactory?.toLowerCase()
-            ? factoryCreation
+          target === releasedFactory.toLowerCase() || target === otherFactory.toLowerCase()
+            ? releaseCreation
             : target === addresses.zoneRouter?.toLowerCase()
               ? routerCreation
               : target === nextRouter.toLowerCase()
@@ -1576,8 +1559,11 @@ function pendingSourceDeployment({
     options,
     record,
     minedTransaction,
-    factoryTransaction,
     nextRouter,
+    nextRouterCreation,
+    releasedFactory,
+    otherFactory,
+    verifiedContracts: contracts,
     changeRouterMode() {
       const updated = {
         ...authored,

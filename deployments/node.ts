@@ -25,7 +25,7 @@ export {
   rpcTransport,
 } from './chain/runtime.js'
 export { verifyContractSource } from './core/verify.js'
-export { planFactoryRelease, predictRelease } from './core/factory-release.js'
+export { planRelease, predictRelease } from './core/release.js'
 export { missingZoneRpcError, zoneRpcConfiguration } from './modules/earn/zone-router/outputs.js'
 export {
   preflightEarnDeployment,

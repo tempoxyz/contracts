@@ -1,8 +1,8 @@
 # Earn deployment lifecycle
 
 This runbook owns the shared deployment lifecycle: the `pnpm earn` commands, the generated record,
-verification, authority handoffs, and the hosted contract releases: Earn's shared factory releases,
-the [Zone router releases](#zone-router-releases), and the [card releases](#card-releases). The authored profile JSON is in
+verification, authority handoffs, and the [releases](#releases) of every shared contract
+(`pnpm release`). The authored profile JSON is in
 [deployment profiles](../../profiles/README.md), each capability's own steps in its
 [module page](../earn/README.md#capability-modules), engine installation in
 [yield engines](../earn/integrations/engines.md#installation), and package exports in the
@@ -34,7 +34,7 @@ pnpm earn verify profiles/e2e-moderato/profile.json
 
 `plan`, `deploy`, `status`, `verify`, and `deposit` also accept `--trusted-identity <path>`
 for an independently reviewed historical deployment identity
-([shared factory releases](#shared-factory-releases)).
+([releases](#releases)).
 
 Every command loads only the ignored `.env.<profile-id>` beside the `profiles/` directory that holds
 the profile (the repository root for this repository's own;
@@ -289,8 +289,10 @@ The record (`version: 4`) contains:
 
 - `deploymentId`, `deployer`, `owner`, and `factories`, the resolved shared factory release;
 - `deploymentIntentHash` and `componentDeploymentIntentHashes`, one hash per intent component
-  (`core`, `engine`, `zone`, `targetYield`, `boostRewards`, `zoneRouterFactory`, `zoneRouter`,
-  `cards`, `null` when not configured; a record written before a component existed omits it);
+  (`core`, `engine`, `zone`, `targetYield`, `boostRewards`, `zoneRouter`, `cards`, `null` when not
+  configured; a record written before a component existed omits it, and one written while profiles
+  deployed their own `ZoneRouterFactory` keeps that retired `zoneRouterFactory` hash, which owns
+  nothing);
 - `target`: the chain ID, L1 genesis hash, and each capability's external identity, such as the
   Zone's ID, chain ID, Portal, and Messenger;
 - `addresses`, `assetDecimals`, and `deploymentBlock`, the earliest block of a deployment
@@ -304,9 +306,9 @@ Changing intent, replacing code, or restoring state across a regenesis therefore
 reuse stale addresses. Publication is strict: the record must contain exactly the addresses and
 completed deployment steps derived from the plan. Activation steps are not recorded; their state is
 always read from the pool and Portal. Changing an optional component (`zone`, `targetYield`,
-`boostRewards`, `zoneRouterFactory`, `zoneRouter`, `cards`) redeploys only that component's contracts and republishes the record; core and
+`boostRewards`, `zoneRouter`, `cards`) redeploys only that component's contracts and republishes the record; core and
 engine creation intent never changes in place, so a record whose `core` or `engine` hash differs
-from the profile is refused. The immutable Zone routers and the `ZoneRouterFactory` are also replaced,
+from the profile is refused. The immutable Zone routers are also replaced,
 with the steps that configure them, when a recorded one's runtime differs from this checkout's build
 (compiler-declared immutable slots and the CBOR metadata aside: the trailing tail, and the tail of the
 `ZoneRouter` creation code the factory embeds just before it), so a code or compiler change that
@@ -487,8 +489,8 @@ the reward treasury.
 | `deploy-core`                    | deployment | deployer                                                                               | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
 | `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)                   | Bind EarnVault and atomically transfer the engine to the configured final owner |
 | `deploy-router`                  | deployment | deployer                                                                               | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `deploy-card-program`            | deployment | deployer                                                                               | [Card releases](#card-releases)                                                 |
-| `deploy-zone-router-factory`     | deployment | deployer                                                                               | [Zone router](../zone/zone-router.md#deployment)                                |
+| `deploy-card-provider`           | deployment | deployer                                                                               | [Card programs](#card-programs)                                                 |
+| `deploy-card-program`            | deployment | deployer                                                                               | [Card programs](#card-programs)                                                 |
 | `deploy-zone-router`             | deployment | deployer                                                                               | [Zone router](../zone/zone-router.md#deployment)                                |
 | `deploy-merkle-distributor`      | deployment | deployer                                                                               | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `validate-access`                | deployment | deployer                                                                               | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
@@ -525,28 +527,48 @@ Stale pending state or a plausible-looking transaction hash cannot bypass the on
 The reconciler returns a typed `complete` or `handoff` result, the stable boundary for automation;
 an adapter may satisfy only authority it legitimately owns before invoking it again.
 
-## Shared factory releases
+## Releases
 
-Production profiles consume a reviewed release from the per-chain
-[release registry](../../deployments/core/releases.ts); they never deploy shared implementations.
-A release names the `EarnFactory` (`earn`) and, under each engine's `factory.releaseKey`, the engine
-factories it carries. Each chain has exactly one current release: an unpublished pending deployment
-must use it, and a committed record keeps the release it pinned. Finish or discard any pending
-deployment before replacing a chain's release. Before a fresh deployment's first broadcast, the
-deploy command compiles the current EarnFactory, EarnVault, EarnFees, and, for a profile that
-provisions its engine from a venue, that engine's factory, and compares their runtime code with the
-reviewed onchain release and its immutable implementation bindings, so a source change requires a
-fresh release. Pending deployments pin the resolved factory runtime hashes; completed records keep
-the release with their source provenance. Resuming a historical release requires the independently
-reviewed deployer and factory identity in the registry; a pending journal cannot authorize its own
-deployer, factory address, or runtime hash. An unknown hosted record must be enrolled through
-reviewed identity data or supplied with an independent trusted identity. The CLI accepts
-`--trusted-identity <path>`; deployment-package callers supply `trustedIdentity`. The separate
-JSON file must contain exactly `deployer` and `factories`, with the reviewed deployer address and
-factory-release object. A full `deployment.json` is rejected. Review this identity independently;
-copying the untrusted record into a new file does not establish trust. Importing a record never
-enrolls it automatically. A registry-known identity always uses its reviewed baseline, even when
-an explicit trusted identity is supplied.
+Every shared contract is a release: ownerless and immutable, created once per network at its
+deterministic address, and named in that network's entry of the
+[release registry](../../deployments/core/releases.ts). `pnpm release <network>`
+([`core/release.ts`](../../deployments/core/release.ts)) deploys or reuses all of them, in this
+order:
+
+| Release             | Registry key        | Creates                                                                                                               |
+| ------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `core`              | `earn`              | The EarnVault and EarnFees implementations and the `EarnFactory` bound to them                                        |
+| `rewards`           | `rewards`           | The `EarnRewardsFactory`                                                                                              |
+| `<releaseKey>`      | `<releaseKey>`      | Each engine factory, such as `erc4626Engine`                                                                          |
+| `zoneRouterFactory` | `zoneRouterFactory` | The `ZoneRouterFactory` every profile's Zone router deploys through                                                   |
+| `sendSpender`       | `sendSpender`       | The `SendSpender` that never converts, bound to the release `ZoneRouterFactory`                                       |
+| `cardFactory`       | `cardFactory`       | The `CardFactory` bound to the release `ZoneRouterFactory`, on a network that declares Bridge's `SpenderFactory`      |
+| `tempoSpend`        | `tempoSpend`        | Bridge's "TS" handler (`SpenderTempoSpend`) for the network's Bridge `SpenderFactory`, on a network that declares one |
+
+Profiles never create a shared contract: `pnpm earn deploy` reads each one it uses from the registry
+and fails, naming `pnpm release`, when the network has none. A registry entry is `null` until its
+release is broadcast and source verified there. Each network's Bridge `SpenderFactory` is declared
+once, in `bridgeSpenderFactories` ([`releases.ts`](../../deployments/core/releases.ts)); a network
+without one takes no card releases, and no profile there can declare a card program.
+
+The Earn factory release (`earn` and the engine factories, each under its engine's
+`factory.releaseKey`) is the identity every profile deployment pins. Each chain has exactly one
+current factory release: an unpublished pending deployment must use it, and a committed record keeps
+the release it pinned. Finish or discard any pending deployment before replacing a chain's release.
+Before a fresh deployment's first broadcast, the deploy command compiles the current EarnFactory,
+EarnVault, EarnFees, and, for a profile that provisions its engine from a venue, that engine's
+factory, and compares their runtime code with the reviewed onchain release and its immutable
+implementation bindings, so a source change requires a fresh release. Pending deployments pin the
+resolved factory runtime hashes; completed records keep the release with their source provenance.
+Resuming a historical release requires the independently reviewed deployer and factory identity in
+the registry; a pending journal cannot authorize its own deployer, factory address, or runtime hash.
+An unknown hosted record must be enrolled through reviewed identity data or supplied with an
+independent trusted identity. The CLI accepts `--trusted-identity <path>`; deployment-package callers
+supply `trustedIdentity`. The separate JSON file must contain exactly `deployer` and `factories`,
+with the reviewed deployer address and factory-release object. A full `deployment.json` is rejected.
+Review this identity independently; copying the untrusted record into a new file does not establish
+trust. Importing a record never enrolls it automatically. A registry-known identity always uses its
+reviewed baseline, even when an explicit trusted identity is supplied.
 
 ```sh
 pnpm earn verify ../deployments/profiles/<profile-id>/profile.json \
@@ -556,9 +578,8 @@ pnpm earn verify ../deployments/profiles/<profile-id>/profile.json \
 The profile-index command also accepts these files: `pnpm profiles --profiles <dir>
 --trusted-identity <path>`. Repeat `--trusted-identity` for mixed-profile directories. It tries the
 built-in registry first; supplied independent identities can admit only otherwise unknown profiles.
-Without any flags, it takes one
-file from `EARN_TRUSTED_DEPLOYMENT_IDENTITY`. The same identity checks apply, with no automatic
-enrollment from records.
+Without any flags, it takes one file from `EARN_TRUSTED_DEPLOYMENT_IDENTITY`. The same identity
+checks apply, with no automatic enrollment from records.
 
 Releases create EarnShare with empty currency metadata (`""`) and the underlying asset as its quote
 token: an EarnShare is not a USD stablecoin or a 1:1 claim on another EarnShare. Shared factories
@@ -574,10 +595,46 @@ before installing the binary. Tempo's source verifier downloads only the solar r
 lists, so a new release must be added there and deployed before a hosted deployment built with it.
 The compiler is part of every release's identity: CREATE2 release addresses derive from creation
 code, which embeds the compiler's version, so moving to another solar release moves every release
-address. Move only to a published solar release, and only together with a planned factory release.
+address. Move only to a published solar release, and only together with a planned release.
 Source verification passes Forge the solar build (`--compiler-version`, from
 `solar-solc --version`, with `--compilation-profile default`); a manual
-`forge verify-contract` needs the same two flags. Deploy a core release with:
+`forge verify-contract` needs the same two flags.
+
+### Release entry points
+
+Each release runs one Foundry entry point with the `deploy` profile:
+[`DeployFactoryRelease`](../../script/earn/deploy/DeployFactoryRelease.s.sol) holds the core
+(`earnFactoryRelease`) and rewards (`earnRewardsFactory`) entry points, each engine factory's
+`<releaseKey>Factory` entry point lives in that engine's deploy script (for example
+`erc4626EngineFactory` in `DeployERC4626Engine`),
+[`DeployRouterRelease`](../../script/zone/deploy/DeployRouterRelease.s.sol) holds
+`zoneRouterFactory` and `sendSpender`, and
+[`DeployBridgeCards`](../../script/spend/bridge/lifecycle/DeployBridgeCards.s.sol) holds
+`cardFactory` and `tempoSpend`. Every entry point takes the expected chain ID, refuses another chain
+or a Foundry profile other than `deploy`, and broadcasts with `DEPLOYER_PRIVATE_KEY`.
+
+Every release contract is created deterministically
+([`DeterministicRelease`](../../script/DeterministicRelease.sol)): through the CREATE2 deployer
+`0x4e59b44847b379578588920cA78FbF26c0B4956C`, present on every Tempo network and in localnet's
+genesis, with one fixed salt, so the same creation code and constructor arguments land at the same
+address on Moderato and mainnet, and an entry point reuses a contract that already exists there
+instead of creating it again. Changing the compiler, its settings, or a contract's source changes
+its address. Release contracts are ownerless, so anyone creating one first only pays its fee. A
+release that binds the `ZoneRouterFactory` (`sendSpender`, `cardFactory`) deploys it first when it is
+missing, so each release also simulates alone. The card entry points create each contract at the
+addresses Bridge's own [deploy scripts](../spend/bridge/deploy.md) reach
+([`BridgeRelease`](../../script/spend/bridge/deploy/BridgeRelease.sol)), and never call Bridge's
+factory: registering and gating the handler stay with Bridge's admin and governance, and each
+profile's `enable-card-program` step hands those calls off.
+
+`earnFactoryRelease` creates the EarnVault and EarnFees implementations and the immutable factory
+bound to them, and checks its code and bindings. Tempo's RPC must supply the creation estimate for
+the large EarnVault implementation; only this release pins Forge's multiplier to `100`, because
+default padding can exceed Tempo's 30M gas cap. After a failed broadcast, rerunning the entry point
+creates only what is missing. Localnet deploys the same Earn release, at the same addresses and
+reusing contracts that already exist (a persistent devnet deployed before), through the
+single-creation entry points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`,
+plus every registered engine factory's entry point. An entry point can also run by hand:
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \
@@ -587,82 +644,47 @@ FOUNDRY_PROFILE=deploy forge script \
   --gas-estimate-multiplier 100
 ```
 
-`DeployFactoryRelease` holds the core (`earnFactoryRelease`) and rewards (`earnRewardsFactory`)
-release entry points; each engine factory's entry point lives in that engine's deploy script. Every
-entry point takes the expected chain ID, refuses another chain or a Foundry profile other than
-`deploy`, and broadcasts with `DEPLOYER_PRIVATE_KEY`. Every release contract is created
-deterministically ([`DeterministicRelease`](../../script/DeterministicRelease.sol)): through
-the CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C`, present on every Tempo network and
-in localnet's genesis, with one fixed salt, so the same creation code and constructor arguments land
-at the same address on Moderato and mainnet, and an entry point reuses a contract that already exists
-there instead of creating it again. Changing the compiler, its settings, or a contract's source
-changes its address. Release contracts are ownerless, so anyone creating one first only pays its
-fee. `earnFactoryRelease` creates the EarnVault and EarnFees implementations and the immutable
-factory bound to them, and checks its code and bindings.
-Tempo's RPC must supply the creation estimate for the large EarnVault implementation; only this
-release pins Forge's multiplier to `100`, because default padding can exceed Tempo's 30M gas cap.
-After a failed broadcast, rerunning the entry point creates only what is missing. Source-verify all three contracts
-before updating the registry. Localnet deploys the same release, at the same addresses and reusing contracts that already
-exist (a persistent devnet deployed before), through the single-creation entry points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`, plus every
-registered engine factory's entry point.
+### Running the release
 
-### Releasing from CI
+`pnpm release <network> [--broadcast] [--resubmit-verification] [--output <file>]` runs every
+release the network takes, in order, from the repository root with the shared solar build. For each
+it checks that the entry point created exactly the contracts missing from their deterministic
+addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies
+every contract in it on Tempo's verifier. A release whose contracts all exist is reconciled without
+running Forge, so rerunning deploys only what changed. For invalid verifier entries,
+`--resubmit-verification` requires `--broadcast` and follows the same
+[repair limits](#source-verification); it does not force redeployment. Without broadcast, Forge only
+simulates, at the same addresses a broadcast uses. The result (`--output`) is written after each
+release, so a failure keeps the releases before it; a contract deployed but not source verified fails
+the run, to retry with `forge verify-contract` rather than by rerunning the release.
 
-The [Deploy workflow](#deploying-the-hosted-stack-from-ci) releases every shared factory from `main`
-as its first step on each network, running `pnpm factory-release <network> all [--broadcast]`
-([`core/factory-release.ts`](../../deployments/core/factory-release.ts)); `all` is the core release and every engine factory the registry names. The command
-runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning deploys only what changed. Locally, `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just that one. For invalid verifier entries, `--resubmit-verification` requires `--broadcast` and follows the same [repair limits](#source-verification); it does not force redeployment. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. The command refuses
-Zone router and card releases, which release separately ([Zone router releases](#zone-router-releases), [card releases](#card-releases)).
-
-Registry inputs must contain the complete expected contract set at addresses independently derived
-from the local compile and CREATE2 parameters, with only `match` or `exact_match` source results.
 Every release validates the RPC chain. Existing selector-latest receipts are archived before a new
-attempt, so an old file cannot prove a new creation. Direct CREATE2 attribution requires the mined
-receipt and actual transaction calldata; a nested router requires its matching factory event.
-Already-present contracts without that creation proof are recorded as reused with no creator
-transaction. Reused routers still require each spender's router-factory binding to match.
+attempt, so an old file cannot prove a new creation. CREATE2 attribution requires the mined receipt
+and actual transaction calldata. Already-present contracts without that creation proof are recorded
+as reused with no creator transaction.
 
-After a broadcast, `pnpm factory-release registry` records every release whose contracts all source
-verified in [`releases.ts`](../../deployments/core/releases.ts), and the Deploy workflow's record pull
-request carries it, so the registry changes only through review.
+After a broadcast, `pnpm release registry <result.json>... [--body <file>]` records every release
+whose contracts all source verified in [`releases.ts`](../../deployments/core/releases.ts). Its inputs
+must contain the complete expected contract set at addresses independently derived from the local
+compile and CREATE2 parameters, with only `match` or `exact_match` source results. The Deploy
+workflow's record pull request carries the change, so the registry changes only through review.
 
-Every CI deployment (Deploy, Zone Router Release) runs in the
-`factory-release-<network>` environment, which has no required reviewer, accepts only `main`, and
-holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
-`TEMPO_RPC_PASSWORD`), so dispatching from `main` is the approval. Both environments hold the one
-deployer key, which is also every committed profile's deployer; releases are ownerless, so for them it
-only pays fees. Rotating it updates both environments. Deploy also passes an optional
-`ZONE_ADMIN_PRIVATE_KEY`: where an environment holds it, a profile on a Zone it administers makes
-the [Zone administrator's grants](#commands) itself instead of stopping at that handoff. Hosted E2E
-also reads an optional `END_USER_PRIVATE_KEY`, the [third-party user](e2e-environments.md) distinct from
-the deployer; without it those cases are blocked. The network's `hosted-contracts-<network>`
-queue orders only CI jobs, so do not broadcast with that key locally while a CI deployment runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
-for example from a profile's `.env.<id>`; it does not load dotenv files itself.
-
-An engine factory release is independent: the `<releaseKey>Factory` entry point of the engine's
-deploy script (for example `erc4626EngineFactory` in `DeployERC4626Engine`) deploys it. Deploy one
-when the engine creation bytecode changes, then source-verify it before updating the registry. A
-core already created against an old engine remains tied to that engine.
-
-```bash
-FOUNDRY_PROFILE=deploy forge script \
-  script/earn/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript \
-  --sig 'erc4626EngineFactory(uint256)' 42431 \
-  --network tempo --rpc-url https://rpc.moderato.tempo.xyz --broadcast --slow
-```
+The command runs locally with `DEPLOYER_PRIVATE_KEY` exported, for example from a profile's
+`.env.<id>`; it does not load dotenv files itself. Do not broadcast with that key locally while a CI
+deployment runs.
 
 ### Deploying the hosted stack from CI
 
-The **Deploy** workflow ([`deploy.yml`](../../.github/workflows/deploy.yml)) brings a hosted
-network to what `main` describes in one dispatch: every shared factory release (`pnpm factory-release
-<network> all`), the Zone router release's `ZoneRouterFactory`, the [card releases](#card-releases)
-(`pnpm card-release <network> all`), then `pnpm earn deploy` for every
+The **Deploy** workflow ([`deploy.yml`](../../.github/workflows/deploy.yml)) brings a hosted network
+to what `main` describes in one dispatch: `pnpm release <network>`, which records its verified
+releases in the checkout's registry with `pnpm release registry`, then `pnpm earn deploy` for every
 committed profile on that network (`pnpm profiles --network <network>`, which lists them without
-checking records, so a record a release outdated is redeployed rather than refused). Choose
-`both` (Moderato, then mainnet only after Moderato succeeds), one network, and whether to broadcast
-(off by default); without broadcast it simulates the releases and prints each profile's plan. With broadcast,
-`resubmit-verification` passes `--resubmit-verification` to every release and profile deploy, for a
-verifier entry that differs from the recorded deployment ([repair limits](#source-verification)).
+checking records, so a record a release outdated is redeployed rather than refused). Choose `both`
+(Moderato, then mainnet only after Moderato succeeds), one network, and whether to broadcast (off by
+default); without broadcast it simulates the releases and prints each profile's plan. With
+broadcast, `resubmit-verification` passes `--resubmit-verification` to the release and every profile
+deploy, for a verifier entry that differs from the recorded deployment
+([repair limits](#source-verification)).
 
 Every step reconciles: existing release contracts are reused, and a profile deploy keeps what its
 record and the chain already hold, so a run on an unchanged `main` sends nothing and a rerun after a
@@ -671,118 +693,54 @@ and Forge's `broadcast/` receipts) is kept in the Actions cache between runs for
 short of `complete` (a handoff to an outside authority, or source verification still pending) fails
 the job after the others run, naming what it waits on; rerun once that is done.
 
-It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue as
-the release workflows, with the same deployer key, which is also every committed profile's deployer;
-dispatching from `main` is the only approval. After a broadcast, the `record` job pushes a
-`deploy/<run>-<attempt>` branch with every source-verified release in `releases.ts` and every changed
-`deployment.json`, from every network that got that far, and opens its pull request (or links it in the
-summary when Actions may not open one). A `SendSpender` and a `ZoneRouter` outside a profile take
-per-deployment parameters and stay with Zone Router Release.
+Each network's job runs in the `factory-release-<network>` environment, which has no required
+reviewer, accepts only `main`, and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`,
+`TEMPO_RPC_USERNAME`, `TEMPO_RPC_PASSWORD`), so dispatching from `main` is the only approval. Both
+environments hold the one deployer key, which is also every committed profile's deployer; releases
+are ownerless, so for them it only pays fees. Rotating it updates both environments. Deploy also
+passes an optional `ZONE_ADMIN_PRIVATE_KEY`: where an environment holds it, a profile on a Zone it
+administers makes the [Zone administrator's grants](#commands) itself instead of stopping at that
+handoff. Hosted E2E runs in the same environment and also reads an optional `END_USER_PRIVATE_KEY`,
+the [third-party user](e2e-environments.md) distinct from the deployer; without it those cases are
+blocked. The network's `hosted-contracts-<network>` queue orders only CI jobs.
 
+After a broadcast, the `record` job pushes a `deploy/<run>-<attempt>` branch with every
+source-verified release in `releases.ts` and every changed `deployment.json`, from every network that
+got that far, and opens its pull request (or links it in the summary when Actions may not open one).
 A change that bumps a release a committed profile uses leaves that profile's record stale until the
 stack is redeployed: dispatch Deploy after it merges, then merge the record pull request.
 
 ### Replaced Zone routers
 
-Deploy replaces a Zone router without revoking the old one: its pool allowlist entries and Portal
+A profile's Zone router deploys through the release `ZoneRouterFactory`, recorded beside it as
+`zoneRouterFactory`. Deploy replaces a router whose recorded runtime differs from this checkout's
+build (apart from immutables and compiler metadata) through the release factory of that build, which
+`pnpm release` deploys first; a new router deploys only through this build's release factory, so
+deploy fails asking for `pnpm release` when the registry names another. A router with Spend stays on
+the factory its spenders bind, since they, such as the profile's own card program, take spends only
+from that factory's routers: it is not replaced for a new build, and a new mode needs spenders bound
+to this build's release factory. The lifecycle cannot authenticate a spender's implementation, so it
+never grants a router that lists spenders with its own keys: its pool and Portal admissions are
+handed to their owners, who check every spender first. It does not revoke the old one: its pool allowlist entries and Portal
 gateway stay until their owners remove them, since a router address can serve more than one
 profile. Once nothing uses the old router, the pool owner calls `setTakerAllowed(old, false)` and
 `setRecipientAllowed(old, false)` on the pool, and the Zone administrator calls
 `setGateway(old, false)` on the Portal. Read all three back, and confirm the replacement keeps
 its own.
 
-### Zone router releases
+### Card programs
 
-The [Zone router](../zone/zone-router.md)'s ownerless contracts release apart from Earn's, through
-the **Zone Router Release** workflow ([`zone-router-release.yml`](../../.github/workflows/zone-router-release.yml))
-and `pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast]`
-([`core/zone-router-release.ts`](../../deployments/core/zone-router-release.ts)), which accepts only these
-releases. It runs the same release engine as factory releases, from
-the repository root with the shared solar build and `deploy` profile: the same address,
-creation-code, and receipt checks, reconciling a release that already exists, and source
-verification after a broadcast. Its CLI also accepts `--resubmit-verification` with `--broadcast`,
-with the same [repair limits](#source-verification). None has a registry entry, so there is no `all` and nothing is
-recorded afterwards. Pass a release's parameters as one JSON object (`--parameters`, or the
-workflow's `parameters` input, which reaches the command only through the environment); the command
-validates them before Forge runs, refuses parameters for the factory, and records them in the result
-and the job summary.
-
-The workflow runs from `main` only. Choose the networks (`both` runs Moderato, then mainnet only after
-Moderato succeeds), one release and its parameters, and whether to broadcast. Each job's summary and
-its `zone-router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
-and parameters, with the run's `broadcast/` receipts. As with Deploy, the dispatch is
-the approval: each network's job runs in the same `factory-release-<network>` environment, with no
-required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
-pays fees. It shares the network's
-`hosted-contracts-<network>` queue with Deploy. The `ZoneRouterFactory` takes no
-parameters and deploys with the stack in [Deploy](#deploying-the-hosted-stack-from-ci); the command
-still releases it locally.
-
-| Release             | Parameters                                                                                        | Creates                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `zoneRouterFactory` | None                                                                                              | The `ZoneRouterFactory`                                                |
-| `sendSpender`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}`; optional `"factory"` | A `SendSpender`, never converting or converting `vault`'s asset at par |
-| `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                                           | The router `factory.deploy(mode)` creates                              |
-
-A `SendSpender` accepts spends only from routers its factory deployed whose mode lists it. Without
-`factory`, the release binds the release `ZoneRouterFactory` (the address Deploy and the `zoneRouterFactory` release share) and deploys that factory first when it is missing, so operators pass no factory and the
-spender's address still follows from the build and settings alone. List it only in modes deployed
-through that factory.
-
-A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
-spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`
-(together, for a converting Earn mode), and `spenders` (exactly with spend; their order is part of
-the mode). Omitted fields are zero.
-
-```bash
-pnpm zone-router-release moderato zoneRouter \
-  --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "spenders": ["<SendSpender>"]}}'
-```
-
-[`DeployRouterRelease`](../../script/zone/deploy/DeployRouterRelease.s.sol) holds their entry
-points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
-each spender are created through the CREATE2 deployer with Earn's release salt
-(`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
-So a `ZoneRouterFactory` or `SendSpender` of the same build and settings, and a
-`ZoneRouter` of the same factory and mode, lands at the same address whoever deploys it, on every network, and an entry
-point reuses one that exists (a router only if `factory.isRouter` says its factory made it). Forge
-records the router as a contract its factory call created; the command matches it by address and
-checks it like any other creation, then source-verifies it with `abi.encode(mode)` as its
-constructor arguments. A release deploys only: the pool owner still admits a converting spender
-or router, and the Zone's Portal administrator a router
-([Zone router deployment](../zone/zone-router.md#deployment)).
-
-### Card releases
-
-The card integration's shared ownerless contracts release with `pnpm card-release <network>
-<release|all> [--broadcast]` ([`modules/cards/release.ts`](../../deployments/modules/cards/release.ts)),
-which the [Deploy workflow](#deploying-the-hosted-stack-from-ci) runs with `all` after the
-`ZoneRouterFactory` and before the profiles. It runs the same release engine as the factory
-releases: the same address, creation-code, and receipt checks, reconciling a release that already
-exists, and source verification after a broadcast, with `--resubmit-verification` under the same
-[repair limits](#source-verification). Nothing is recorded in a registry.
-
-| Release       | Creates                                                                                               |
-| ------------- | ----------------------------------------------------------------------------------------------------- |
-| `cardFactory` | The `CardFactory` bound to the release `ZoneRouterFactory`, deploying that factory first when missing |
-| `tempoSpend`  | Bridge's "TS" handler (`SpenderTempoSpend`) for the network's Bridge `SpenderFactory`                 |
-
-Each network's Bridge `SpenderFactory` is declared once, in `bridgeSpenderFactories`
-([`modules/cards/profile.ts`](../../deployments/modules/cards/profile.ts)); `all` releases both on a
-network that declares one and nothing elsewhere. [`DeployBridgeCards`](../../script/spend/bridge/lifecycle/DeployBridgeCards.s.sol)
-holds the entry points, creating each contract through the CREATE2 deployer with Earn's release salt
-([`BridgeRelease`](../../script/spend/bridge/deploy/BridgeRelease.sol)), at the addresses Bridge's
-own [deploy scripts](../spend/bridge/deploy.md) reach. The release never calls Bridge's factory:
-registering and gating the handler stay with Bridge's admin and governance, and each profile's
-`enable-card-program` step hands those calls off.
-
-A profile's card program ([`cards`](../../profiles/README.md#card-programs)) deploys with the profile:
-`deploy-card-program` creates its `BridgeProvider` at its release address and its `CardSpender`
-through the release `CardFactory`, reusing either when it exists, and records the release
-`ZoneRouterFactory` (`cardRouterFactory`), the `CardFactory`, the provider and the program. Their
-release addresses identify the first three; the program is source verified against the
-`ProgramDeployed` event that created it, which a program Bridge deployed with its own scripts also
-has. Unlike a Zone router, a recorded program is never replaced for a new build, since cardholder
-keys and routers point at its address; a later `ZoneRouterFactory` or `CardFactory` release also
-leaves it as it is. A new program is a change of `spenderId` or provider. The program deploys before the Zone router, so a Spend-mode router in the same profile may list
-it in `zoneRouter.spenders`; preflight accepts its predicted address before it holds code.
+A profile's card program ([`cards`](../../profiles/README.md#card-programs)) deploys with the
+profile, against the release `CardFactory` and "TS" handler from the registry:
+`deploy-card-provider` creates its `BridgeProvider` at its release address and
+`deploy-card-program` its `CardSpender` through the release `CardFactory`, each reusing the contract
+when it exists, as Bridge's own scripts do. The record holds the release `ZoneRouterFactory`
+(`cardRouterFactory`), the `CardFactory`, the provider and the program. Deploy source-verifies the
+provider, whose release address commits to its creation code and constructor arguments, so it needs
+no creation transaction, and the program against the `ProgramDeployed` event that created it, which a
+program Bridge deployed with its own scripts also has. Unlike a Zone router, a recorded program is
+never replaced for a new build, since cardholder keys and routers point at its address; a later
+`ZoneRouterFactory` or `CardFactory` release also leaves it as it is. A new program is a change of
+`spenderId` or provider. The program deploys before the Zone router, so a Spend-mode router in the
+same profile may list it in `zoneRouter.spenders`; preflight accepts its predicted address before it
+holds code.

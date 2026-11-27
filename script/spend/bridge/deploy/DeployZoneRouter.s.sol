@@ -35,7 +35,7 @@ library SpendMode {
 ///         `BridgeProvider` and its program land at their deterministic addresses (`BridgeProgramRelease`),
 ///         and one already there is reused; so is a router the factory already deployed for this mode. The
 ///         program takes `spendFrom` only from that factory's routers, so the factory is the release
-///         `ZoneRouterFactory` (`pnpm zone-router-release <network> zoneRouterFactory`), never a new one. None
+///         `ZoneRouterFactory` (`pnpm release <network>`), never a new one. None
 ///         of them has an owner, so nothing else is configured here. A Zone with a closed callback gateway must still grant the router the
 ///         gateway role, and one that enforces access must admit the program's refund recipient and the
 ///         program wallet that deposits refunds.

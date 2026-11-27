@@ -56,17 +56,18 @@ have: which gateways they admit.
 ## Deployment
 
 A deployment profile's [`zoneRouter`](../../profiles/README.md#zone-routers) deploys one router
-with `pnpm earn deploy` beside its Earn stack. The lifecycle runs the
-`script/zone/deploy/` scripts from the repository root, compiled with solar and source-verified like Earn's
-contracts:
+with `pnpm earn deploy` beside its Earn stack, through the release `ZoneRouterFactory`, which
+[`pnpm release`](../deployment/deployment.md#releases) deploys and the release registry names; a
+profile never deploys a factory, and a network without one in its registry fails. The lifecycle runs
+the `script/zone/deploy/` scripts from the repository root, compiled with solar and source-verified
+like Earn's contracts, and records the factory as `zoneRouterFactory`:
 
-1. `deploy-zone-router-factory`, unless the profile names a factory;
-2. `deploy-zone-router`: `factory.deploy(mode)`, then a check of `isRouter`, `predict` and every
+1. `deploy-zone-router`: `factory.deploy(mode)`, then a check of `isRouter`, `predict` and every
    immutable against the mode. When anyone, such as Bridge with its [router script](../spend/bridge/deploy.md#4-deploy-the-router-for-each-zone), already deployed the mode
    through the factory, the step adopts that router and records its `RouterDeployed` transaction,
    which is also what it records after its own run, so a router someone created in between keeps
    its real creation transaction;
-3. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
+2. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
    (the PropAMM pool owner admits a converting Earn mode), `enable-zone-router-tokens` (the Zone
    enables EarnShare and the private asset for Earn ops), `register-zone-router-gateway` (the
    Portal administrator admits the router as a callback gateway when the Zone restricts gateways)
@@ -80,10 +81,9 @@ contracts:
    EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; units a
    token's transfer policy refuses, or an unverified spender's, are noted rather than sent, see
    [balance residues](../deployment/deployment.md#gas-residue-after-deployment)).
-   The lifecycle grants pool, gateway and account admission with its own keys only when it
-   deployed the factory itself; for a router from a factory the profile names, each is always handed
-   off, for the pool owner or the Portal administrator to check that factory's verified source
-   first. Before any automatic pool admission or Portal role grant, read-only constructor simulations of the reviewed local
+   The lifecycle cannot authenticate a spender's implementation, so a router that lists spenders is
+   always handed to the pool owner and the Portal administrator, who check every spender first.
+   Before any automatic pool admission or Portal role grant, read-only constructor simulations of the reviewed local
    factory and router builds must match the deployed runtime exactly, including their immutable
    values. A matching getter or address alone is insufficient; missing evidence stops the grant.
 
@@ -99,13 +99,11 @@ release `SendSpender` for its settings (both predicted from this checkout's buil
 protected EarnShare the route is intended to move, that the policy admits it. A profile deploys no spender: it lists deployed ones in
 `spenders`, such as a release's `SendSpender` or a card program's `CardSpender`.
 
-Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a
-`ZoneRouterFactory`, a `SendSpender`, or a mode's router from
-`main` ([Zone router releases](../deployment/deployment.md#zone-router-releases)). Each lands at an address its
-build and settings fix: the factory and spenders through the CREATE2 deployer with Earn's release
-salt, and a router at its factory's `predict(mode)`, so whoever deploys the same one, Tempo or an
-integrator, gets the same contract, and a release reuses one that exists. Admission and pool
-authorization stay with their owners, as above.
+[`pnpm release`](../deployment/deployment.md#releases) deploys and source-verifies the
+`ZoneRouterFactory` and the `SendSpender` that never converts, through the CREATE2 deployer with
+Earn's release salt, so each lands at an address its build fixes and whoever deploys the same one,
+Tempo or an integrator, gets the same contract; a router lands at its factory's `predict(mode)`.
+Admission and pool authorization stay with their owners, as above.
 
 ## Ops
 
@@ -200,9 +198,9 @@ codehash matches its released build.
 | `SendSpender` | A public address, in the withdrawn token or redeemed from Earn                      | `abi.encode(Send)`      | Optional vault, par pool and customer ID |
 | `CardSpender` | A destination its provider authorizes (Rain collateral, a Bridge settlement wallet) | `abi.encode(CardSpend)` | The provider                             |
 
-`SendSpender` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
-a Bridge program's `CardSpender` by a profile's [`cards`](../../profiles/README.md#card-programs), each at a
-deterministic address, and listed in a profile's `zoneRouter.spenders`.
+The `SendSpender` that never converts is a [release](../deployment/deployment.md#releases) and a
+Bridge program's `CardSpender` deploys from a profile's [`cards`](../../profiles/README.md#card-programs),
+each at a deterministic address, and listed in a profile's `zoneRouter.spenders`.
 
 ### `ISpender`
 
@@ -266,9 +264,10 @@ rescued; only that pool could pull stranded `convertAsset`. Whoever builds the c
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the spender as a taker and recipient.
 It emits `Sent(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
-no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSpender`](../deployment/deployment.md#zone-router-releases), which binds
-the release `ZoneRouterFactory` unless told another, and list it in a profile's `zoneRouter.spenders`
-for a router from that factory.
+no Zone account or `senderTag`. [`pnpm release`](../deployment/deployment.md#releases) deploys the
+one that never converts, bound to the release `ZoneRouterFactory`; a converting one takes its vault,
+pool and customer ID in `DeployRouterRelease`'s `sendSpender` entry point, run with
+`forge script`. List either in a profile's `zoneRouter.spenders`.
 
 ### `CardSpender`
 

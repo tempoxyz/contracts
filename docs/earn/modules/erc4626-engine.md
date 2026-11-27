@@ -44,7 +44,7 @@ test fixtures, not production venues.
 
 [`ERC4626EngineFactory`](../../../src/earn/engines/erc4626/ERC4626EngineFactory.sol) is ownerless and
 permissionless, released once per network and pinned in that network's current release
-([factory releases](../../deployment/deployment.md#shared-factory-releases)).
+([factory releases](../../deployment/deployment.md#releases)).
 `deploy(deploymentId, vault, owner, nameOverride, symbolOverride)` uses `CREATE2` to deploy the
 reviewed engine with the given setup owner; the factory keeps no engine authority and rejects itself
 as owner (`FactoryCannotBeFinalOwner`) and a zero deployment ID. `computeEngineSalt` and

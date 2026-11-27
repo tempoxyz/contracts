@@ -34,7 +34,7 @@ sponsor from it. To add a network:
    `zoneChainIdEnd`), and the hosted Zone's ID.
 2. Add its entry, under the same ID, to `canonicalReleases` in the
    [release registry](../../deployments/core/releases.ts); type checking fails until it exists. One
-   entry holds the reviewed [shared factory release](deployment.md#shared-factory-releases)
+   entry holds the reviewed [shared factory release](deployment.md#releases)
    (`factories`, with every engine factory key and `null` for a factory not yet released there).
 
 ## External deployments

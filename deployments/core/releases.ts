@@ -32,31 +32,66 @@ const engineFactoryKeys = engineFactories.map((factory) => factory.releaseKey)
 const factoryReleaseKeys: readonly (keyof EarnFactoryRelease)[] = ['earn', ...engineFactoryKeys]
 
 /**
- * The reviewed releases of one hosted network: the shared factory release every fresh profile
- * deployment uses, with every engine factory key (`null` while that factory has no reviewed release
- * there).
+ * Every shared contract `pnpm release` deploys besides the Earn factory release, keyed as the
+ * registry records it: the rewards factory, the ZoneRouterFactory, the SendSpender bound to it, the
+ * CardFactory bound to it, and Bridge's "TS" handler for the network's declared SpenderFactory.
  */
-type CanonicalReleases = {
-  factories: { earn: Address } & Record<EngineFactoryKey, Address | null>
-}
+export const singletonReleaseKeys = [
+  'rewards',
+  'zoneRouterFactory',
+  'sendSpender',
+  'cardFactory',
+  'tempoSpend',
+] as const
 
-/** Every hosted network's reviewed releases; a new network or engine factory needs its entry. */
-const canonicalReleases: Readonly<Record<HostedEnvironmentId, CanonicalReleases>> = {
+export type SingletonReleaseKey = (typeof singletonReleaseKeys)[number]
+
+/** Every key of a network's registry entry, in serialized order. */
+export const releaseKeys = [...factoryReleaseKeys, ...singletonReleaseKeys] as const
+
+export type ReleaseKey = (typeof releaseKeys)[number]
+
+/**
+ * One hosted network's registry entry: the address of every shared contract `pnpm release` deployed
+ * and source verified there, `null` while one has no reviewed release there. The Earn factory
+ * release (`earn` and the engine factories) is the one every fresh profile deployment pins.
+ */
+type NetworkRelease = { earn: Address } & Record<Exclude<ReleaseKey, 'earn'>, Address | null>
+
+/** Every hosted network's registry entry; a new network or shared contract needs its entry. */
+const canonicalReleases: Readonly<Record<HostedEnvironmentId, NetworkRelease>> = {
   mainnet: {
-    factories: {
-      earn: getAddress('0x508E90000De7c1Ac1842F83f24b028a585E9F106'),
-      erc4626Engine: getAddress('0xF468B8cf6B225A94c7bC3D4489B11a94029dbcD9'),
-    },
+    earn: getAddress('0x508E90000De7c1Ac1842F83f24b028a585E9F106'),
+    erc4626Engine: getAddress('0xF468B8cf6B225A94c7bC3D4489B11a94029dbcD9'),
+    rewards: null,
+    zoneRouterFactory: null,
+    sendSpender: null,
+    cardFactory: null,
+    tempoSpend: null,
   },
   moderato: {
-    factories: {
-      earn: getAddress('0x6c33354f43B8f0e0b4106fe76590A9F24117C5A1'),
-      erc4626Engine: getAddress('0x176859D2983ff25F095BF767F4F49dDd02a1Be62'),
-    },
+    earn: getAddress('0x6c33354f43B8f0e0b4106fe76590A9F24117C5A1'),
+    erc4626Engine: getAddress('0x176859D2983ff25F095BF767F4F49dDd02a1Be62'),
+    rewards: null,
+    zoneRouterFactory: null,
+    sendSpender: null,
+    cardFactory: null,
+    tempoSpend: null,
   },
 }
 
-/** The reviewed releases of the hosted network on a chain ID. */
+/**
+ * Bridge's `SpenderFactory` on each hosted network: the one declaration of it, read by the release,
+ * which deploys its "TS" handler, and by every profile's card program on that network. `null` until
+ * a network has one; there the release deploys no card contracts and no profile can declare a
+ * Bridge program.
+ */
+export const bridgeSpenderFactories: Readonly<Record<HostedEnvironmentId, Address | null>> = {
+  moderato: null,
+  mainnet: null,
+}
+
+/** The registry entry of the hosted network on a chain ID. */
 function chainReleases(chainId: number) {
   const environment = hostedEnvironment(chainId)
   return environment ? canonicalReleases[environment.id] : undefined
@@ -64,7 +99,7 @@ function chainReleases(chainId: number) {
 
 /** The current reviewed release of a canonical chain, carrying only its released engine factories. */
 export function resolveEarnFactoryRelease(chainId: number): EarnFactoryRelease {
-  const release = chainReleases(chainId)?.factories
+  const release = chainReleases(chainId)
   if (!release) throw new Error(`No reviewed factory release for chain ${chainId}`)
   return {
     earn: release.earn,
@@ -72,6 +107,28 @@ export function resolveEarnFactoryRelease(chainId: number): EarnFactoryRelease {
       engineFactoryKeys.flatMap((key) => (release[key] === null ? [] : [[key, release[key]]])),
     ),
   }
+}
+
+/**
+ * The registry address of one shared contract on a hosted chain. Profile deployments use it and
+ * never create one, so a contract without a release there fails, naming the command that releases
+ * it.
+ */
+export function releasedContract(chainId: number, key: SingletonReleaseKey): Address {
+  const environment = hostedEnvironment(chainId)
+  const address = environment ? canonicalReleases[environment.id][key] : undefined
+  if (!address) throw missingRelease(chainId, key)
+  return address
+}
+
+/** The error for a shared contract a chain's registry entry lacks, naming the command that releases it. */
+export function missingRelease(chainId: number, key: SingletonReleaseKey) {
+  const environment = hostedEnvironment(chainId)
+  return new Error(
+    environment
+      ? `No ${key} release on ${environment.id}; run pnpm release ${environment.id} and record its registry entry first`
+      : `No release registry for chain ${chainId}`,
+  )
 }
 
 /** Whether two releases name exactly the same factories. */

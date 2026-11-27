@@ -50,6 +50,8 @@ export async function assertStepCreation(
   const { client, outputs, profile, step, transactions } = options
   // Local scripts can batch transactions; only hosted records require canonical creation evidence.
   if (!isHostedDeploymentChain(profile.chainId)) return
+  // A release contract's address commits to its creation code, whoever created it.
+  if (step.source?.release) return
   const factory = step.creationEvent?.(profile, outputs)
   const output = step.source?.output ?? factory?.output
   if (!output) {

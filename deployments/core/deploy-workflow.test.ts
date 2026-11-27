@@ -38,7 +38,7 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('if [[ -z "${TEMPO_RPC_URL:-}" ]]; then')
     // Resubmission reaches the releases and every profile deploy, and only with broadcast.
     expect(workflow).toContain('RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}')
-    expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(3)
+    expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(1)
     expect(workflow).toContain('deploy+=(--resubmit-verification)')
     expect(workflow).toContain('ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}')
   })
@@ -48,12 +48,7 @@ describe('deploy workflow', () => {
   })
 
   test('gives the keys and RPC credentials only to the steps that send', () => {
-    const deploySteps = [
-      'Deploy the factory releases',
-      'Deploy the ZoneRouterFactory',
-      'Deploy the card releases',
-      'Deploy the profiles',
-    ]
+    const deploySteps = ['Deploy the releases', 'Deploy the profiles']
     const readers = secretReaders(workflow)
     expect(readers.every(({ indent }) => indent === 10)).toBe(true)
     const stepsReading = (secret: string) =>
@@ -96,31 +91,29 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('group: hosted-contracts-${{ matrix.network }}')
   })
 
-  test('reconciles the releases, the Zone router factory, the card releases, then every profile', () => {
+  test('runs the release, records its registry entry, then reconciles every profile', () => {
     const steps = [
-      'pnpm factory-release "${arguments[@]}"',
-      'pnpm zone-router-release "${arguments[@]}"',
-      'pnpm card-release "${arguments[@]}"',
+      'pnpm release "${arguments[@]}"',
+      'pnpm release registry "$RUNNER_TEMP/release.json"',
       'pnpm profiles --network "$NETWORK"',
       'pnpm earn "${deploy[@]}"',
     ].map((step) => workflow.indexOf(step))
     expect(steps.every((index) => index > 0)).toBe(true)
     expect([...steps].sort((a, b) => a - b)).toEqual(steps)
-    expect(workflow).toContain('arguments=("$NETWORK" all ')
-    expect(workflow).toContain('arguments=("$NETWORK" zoneRouterFactory --parameters \'{}\' ')
-    expect(workflow).toContain(
-      'arguments=("$NETWORK" all --output "$RUNNER_TEMP/card-release.json")',
-    )
-    // Every release result reaches the summary and the artifact.
-    expect(workflow).toContain(
-      '"$RUNNER_TEMP/zone-router-release.json" "$RUNNER_TEMP/card-release.json"',
-    )
-    expect(workflow).toContain('${{ runner.temp }}/card-release.json')
+    expect(workflow).toContain('arguments=("$NETWORK" --output "$RUNNER_TEMP/release.json")')
+    // A failed release still records the verified releases before it, then fails the step.
+    expect(workflow).toContain('pnpm release "${arguments[@]}" || status=$?')
+    expect(workflow).toContain('exit "$status"')
+    // The release result reaches the summary and the artifact.
+    expect(workflow).toContain('if [[ -f "$RUNNER_TEMP/release.json" ]]; then')
+    expect(workflow).toContain('${{ runner.temp }}/release.json')
+    expect(workflow).not.toMatch(/factory-release\b(?!-\$)|zone-router-release|card-release/)
   })
 
-  test('replaces the retired Bridge Release workflow', () => {
+  test('replaces the retired release workflows', () => {
     const workflows = readdirSync(new URL('../../.github/workflows/', import.meta.url))
     expect(workflows).not.toContain('bridge-release.yml')
+    expect(workflows).not.toContain('zone-router-release.yml')
   })
 })
 
@@ -202,6 +195,43 @@ describe('deploy record', () => {
       expect(run(record, 'git diff --cached --name-only').trim()).toBe(
         'profiles/new/deployment.json',
       )
+    })
+  })
+
+  test("applies both networks' registry changes, even at the edges of their entries", () => {
+    withRepos((repo, root) => {
+      const registry = readFileSync(new URL('./releases.ts', import.meta.url), 'utf8')
+      const networks = ['moderato', 'mainnet'].map((name) => {
+        const dir = repo(name)
+        writeFileSync(join(dir, 'deployments/core/releases.ts'), registry)
+        run(dir, 'git add -A && git commit -qm registry')
+        return dir
+      })
+      const record = repo('record')
+      writeFileSync(join(record, 'deployments/core/releases.ts'), registry)
+      run(record, 'git add -A && git commit -qm registry')
+      // The last key of mainnet's entry and the first of moderato's, two lines apart.
+      const edit = (dir: string, from: RegExp, to: string) =>
+        writeFileSync(
+          join(dir, 'deployments/core/releases.ts'),
+          readFileSync(join(dir, 'deployments/core/releases.ts'), 'utf8').replace(from, to),
+        )
+      edit(
+        networks[0]!,
+        /(moderato: \{\n {4}earn: getAddress\(')[^']+/,
+        `$1${'0x'.padEnd(42, 'a')}`,
+      )
+      edit(
+        networks[1]!,
+        /(mainnet: \{[\s\S]*? {4}tempoSpend: )null/,
+        `$1getAddress('${'0x'.padEnd(42, 'b')}')`,
+      )
+      for (const [index, dir] of networks.entries())
+        collect(dir, join(root, `changes-${index}.patch`))
+      for (const index of [0, 1]) apply(record, join(root, `changes-${index}.patch`))
+      const recorded = readFileSync(join(record, 'deployments/core/releases.ts'), 'utf8')
+      expect(recorded).toContain(`earn: getAddress('${'0x'.padEnd(42, 'a')}')`)
+      expect(recorded).toContain(`tempoSpend: getAddress('${'0x'.padEnd(42, 'b')}')`)
     })
   })
 

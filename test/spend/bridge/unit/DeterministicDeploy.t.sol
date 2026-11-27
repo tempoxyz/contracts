@@ -27,7 +27,7 @@ contract UnbroadcastRelease is BridgeRelease {
 ///         and a second deploy reuses them all without sending anything.
 contract DeterministicDeployTest is ZoneEnv {
     /// @dev Earn's release salt (script/earn/deploy/DeterministicRelease.sol), which
-    ///      deployments/core/factory-release.ts and deployments/modules/cards/release.ts also predict with.
+    ///      deployments/core/release.ts and deployments/modules/cards/steps.ts also predict with.
     bytes32 internal constant EARN_RELEASE_SALT = keccak256("tempoxyz/earn shared factory release");
     uint256 internal constant TEMPO_PK = uint256(keccak256("tempo.release-deployer"));
     uint256 internal constant BRIDGE_PK = uint256(keccak256("bridge.deployer"));

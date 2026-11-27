@@ -11,6 +11,8 @@ import {
   hasRuntimeCode,
   intentComponents,
   peripheryComponents,
+  retiredActions,
+  retiredComponents,
   type DeploymentAddressKey,
   type IntentComponent,
 } from './components.js'
@@ -256,7 +258,11 @@ export function parseEarnDeploymentRecord(
   const plannedActions = new Set<string>(deploymentActions(profile).map((action) => action.id))
   const actions: EarnDeploymentRecord['actions'] = {}
   for (const [key, entry] of Object.entries(object(source.actions, `${path}.actions`))) {
-    if (!plannedActions.has(key) && !changedAction(key)) {
+    if (
+      !plannedActions.has(key) &&
+      !changedAction(key) &&
+      !(retiredActions as readonly string[]).includes(key)
+    ) {
       throw new Error(`${path}.actions.${key} is not used by profile ${profile.id}`)
     }
     actions[key as EarnDeploymentActionId] = parseCompletedAction(entry, `${path}.actions.${key}`)
@@ -468,7 +474,7 @@ function parseContractVerifications(value: unknown, path: string): DeploymentSou
 
 function parseComponentIntentHashes(value: unknown, path: string) {
   const raw = object(value, path)
-  exactKeys(raw, path, ['core', 'engine'], peripheryComponents)
+  exactKeys(raw, path, ['core', 'engine'], [...peripheryComponents, ...retiredComponents])
   // A record written before a capability existed omits its component, which it never configured.
   const hashes = Object.fromEntries(intentComponents.map((key) => [key, raw[key] ?? null]))
   for (const key of intentComponents) {

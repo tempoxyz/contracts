@@ -136,8 +136,10 @@ export async function prepareLifecycleStep(
 
   for (const action of options.actions ?? planEarnDeployment(profile)) {
     const step = deploymentStep(action.id)
+    // A release contract's address is its creation evidence, so no Forge receipt is collected for it.
     const createsContracts =
       step.execution === 'foundry' &&
+      !step.source?.release &&
       Boolean(step.source || step.creationEvent || step.creates?.length)
     // Each activation acts on a published deployment, so it is inspected again first.
     const inspection =
@@ -320,14 +322,16 @@ export async function recordFoundryAction(
       : undefined
   const transactions = created
     ? [created.transaction]
-    : await successfulBroadcastTransactions(
-        rpcClient(options.rpcUrl),
-        options.step.environment.FOUNDRY_BROADCAST ??
-          foundryBroadcastPath(options.root, options.profilePath),
-        required(options.step.arguments[1], 'Foundry target'),
-        options.step.calldata,
-        options.profile.chainId,
-      )
+    : step.execution === 'foundry' && step.source?.release
+      ? []
+      : await successfulBroadcastTransactions(
+          rpcClient(options.rpcUrl),
+          options.step.environment.FOUNDRY_BROADCAST ??
+            foundryBroadcastPath(options.root, options.profilePath),
+          required(options.step.arguments[1], 'Foundry target'),
+          options.step.calldata,
+          options.profile.chainId,
+        )
   if (step.execution === 'foundry' && transactions.length > 0)
     await assertStepCreation(
       {

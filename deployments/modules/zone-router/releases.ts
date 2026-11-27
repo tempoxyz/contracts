@@ -50,6 +50,12 @@ const releaseAddress = (initCode: Hex) =>
     bytecode: initCode,
   })
 
+/** This build's release `ZoneRouterFactory`, which a factory read from the registry must be. */
+export const routerFactoryRelease = {
+  address: () =>
+    releaseAddress(releaseCreationCode('src/zone/ZoneRouterFactory.sol:ZoneRouterFactory')),
+}
+
 /** The release addresses of this checkout's builds, which inspection compares each listed spender with. */
 export const spenderReleases: SpenderReleases = {
   cardFactory: (routerFactory) =>

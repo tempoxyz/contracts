@@ -176,7 +176,8 @@ export async function admitPoolRouter(
   dependencies: AuthorityDependencies,
   pool: Address,
   router: Address,
-  requireProvenance: (client: AuthorityClient) => Promise<void>,
+  /** Throws to refuse the grant, or returns false to hand it to a person instead. */
+  requireProvenance: (client: AuthorityClient) => Promise<void | boolean>,
 ): Promise<{ transactions: Hex[] } | undefined> {
   const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
   if (!key) return undefined
@@ -213,7 +214,7 @@ export async function admitPoolRouter(
         ]),
   ]
   if (poolCalls.length === 0) return { transactions: [] }
-  await requireProvenance(client)
+  if ((await requireProvenance(client)) === false) return undefined
   // A DirectPropAMMRebalanceController owns its pool and forwards owner calls through `execute`.
   const calls = poolCalls.map((data) =>
     authority.controller

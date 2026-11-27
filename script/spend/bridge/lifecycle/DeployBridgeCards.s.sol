@@ -5,6 +5,8 @@ import { console2 } from "forge-std/Script.sol";
 
 import { CardFactory } from "../../../../src/spend/CardFactory.sol";
 import { CardSpender } from "../../../../src/spend/CardSpender.sol";
+import { ICardProvider } from "../../../../src/interfaces/spend/ICardProvider.sol";
+import { BridgeProvider } from "../../../../src/spend/providers/bridge/BridgeProvider.sol";
 import { SpenderTempoSpend } from "../../../../src/spend/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../../src/spend/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { ZoneRouterFactory } from "../../../../src/zone/ZoneRouterFactory.sol";
@@ -13,20 +15,30 @@ import { checkProgram, requireProgram, requireRouterFactory } from "../deploy/De
 import { RouterFactoryChecks } from "../deploy/RouterFactoryChecks.sol";
 
 /// @notice The deployment lifecycle's entry points for Bridge card programs, at the same deterministic
-///         addresses as Bridge's own deploy scripts (`BridgeRelease`): the card release's "TS" handler
-///         and `CardFactory` (`pnpm card-release`), and a profile's `deploy-card-program` step. Every
-///         program trusts the release `ZoneRouterFactory`. Each entry point reuses a contract that
-///         already exists, and none sends a call that needs a role on Bridge's factory.
+///         addresses as Bridge's own deploy scripts (`BridgeRelease`): `pnpm release`'s "TS" handler and
+///         `CardFactory`, and a profile's `deploy-card-provider` and `deploy-card-program` steps, which
+///         take the released `CardFactory` from the registry and never create it. Each entry point reuses a
+///         contract that already exists, and none sends a call that needs a role on Bridge's factory.
 contract DeployBridgeCardsScript is BridgeRelease, BridgeProgramRelease {
-    /// @notice The `deploy-card-program` step's typed input.
-    struct Input {
+    /// @notice The `deploy-card-provider` step's typed input.
+    struct ProviderInput {
         uint256 expectedChainId;
         IBridgeSpenderFactory spenderFactory;
         bytes32 spenderId;
         string outputPath;
     }
 
+    /// @notice The `deploy-card-program` step's typed input.
+    struct Input {
+        uint256 expectedChainId;
+        CardFactory cardFactory;
+        IBridgeSpenderFactory spenderFactory;
+        bytes32 spenderId;
+        string outputPath;
+    }
+
     error NoCardFactory(address cardFactory);
+    error NoProvider(address provider);
     error UnexpectedFoundryProfile(string actual);
     error UnexpectedChain(uint256 actual, uint256 expected);
 
@@ -63,24 +75,43 @@ contract DeployBridgeCardsScript is BridgeRelease, BridgeProgramRelease {
         console2.log("CARD_FACTORY_ADDRESS", address(factory));
     }
 
-    /// @notice A profile's card program: its `BridgeProvider` at its release address and its `CardSpender`
-    ///         from the release `CardFactory`, which must already exist (`pnpm card-release`).
-    function run(Input calldata input) external returns (CardSpender program) {
+    /// @notice A profile's `BridgeProvider` for its Bridge program, at its release address.
+    function provider(ProviderInput calldata input) external returns (BridgeProvider created) {
         _requireChain(input.expectedChainId);
-        address routerFactory = releaseRouterFactory();
-        RouterFactoryChecks.check(routerFactory);
-        address factory = cardFactoryAddress(routerFactory);
-        if (factory.code.length == 0) revert NoCardFactory(factory);
         checkProgram(input.spenderFactory, input.spenderId);
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        Created memory c = _bridgeProgram(input.spenderFactory, input.spenderId, routerFactory);
+        (created,) = _bridgeProvider(input.spenderFactory, input.spenderId);
         vm.stopBroadcast();
-        program = c.program;
+        vm.writeJson(
+            vm.serializeAddress("deployment", "cardProvider", address(created)), input.outputPath, ".latestOutputs"
+        );
+        console2.log("CARD_PROVIDER_ADDRESS", address(created));
+    }
+
+    /// @notice A profile's card program: its `CardSpender` from the released `CardFactory`, over the program's
+    ///         `BridgeProvider` (`provider`). Both must already exist.
+    function run(Input calldata input) external returns (CardSpender program) {
+        _requireChain(input.expectedChainId);
+        CardFactory factory = input.cardFactory;
+        if (address(factory).code.length == 0) revert NoCardFactory(address(factory));
+        address routerFactory = factory.ROUTER_FACTORY();
+        RouterFactoryChecks.check(routerFactory);
+        checkProgram(input.spenderFactory, input.spenderId);
+        ICardProvider cardProvider =
+            ICardProvider(bridgeProviderAddress(address(input.spenderFactory), input.spenderId));
+        if (address(cardProvider).code.length == 0) revert NoProvider(address(cardProvider));
+        address predicted = factory.predict(input.spenderId, cardProvider);
+        if (predicted.code.length == 0) {
+            vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
+            factory.deploy(input.spenderId, cardProvider);
+            vm.stopBroadcast();
+        }
+        program = CardSpender(predicted);
+        require(address(program.PROVIDER()) == address(cardProvider), "program has another provider");
         requireProgram(program, input.spenderFactory, input.spenderId);
         requireRouterFactory(program, routerFactory);
         vm.serializeAddress("deployment", "cardRouterFactory", routerFactory);
-        vm.serializeAddress("deployment", "cardFactory", address(c.cardFactory));
-        vm.serializeAddress("deployment", "cardProvider", address(c.provider));
+        vm.serializeAddress("deployment", "cardFactory", address(factory));
         vm.writeJson(
             vm.serializeAddress("deployment", "cardProgram", address(program)), input.outputPath, ".latestOutputs"
         );

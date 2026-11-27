@@ -6,7 +6,7 @@ import {
   assertFoundryProjectEnvironment,
   foundryProcessEnvironment,
   foundryRpcEnvironment,
-  planFactoryRelease,
+  planRelease,
   predictRelease,
 } from '@tempoxyz/contracts/deployments/node'
 import {
@@ -113,7 +113,7 @@ export function releaseAddresses(
     }).trim() as Hex
   return Object.fromEntries(
     ['core', ...releaseKeys].flatMap((kind) =>
-      predictRelease(planFactoryRelease(kind, 0), creationBytecode).map(
+      predictRelease(planRelease(kind, 0), creationBytecode).map(
         (contract) => [contract.name, contract.address] as const,
       ),
     ),
