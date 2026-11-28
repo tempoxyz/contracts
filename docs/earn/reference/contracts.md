@@ -17,16 +17,17 @@ scope is in [audits](../../audits.md#coverage).
 | `EarnVault`   | Per stack | Yes                       | Two-step operator; guardian, janitor, and distributor seats | Issuance, anchors, engine coordination, async claims                     |
 | `EarnFees`    | Per stack | Yes                       | Ownerless; mutable only by its EarnVault                    | Fee state, calculations, snapshots, claim ledgers, fee EarnShare custody |
 
-| Capability contracts                                          | Scope              | Reference                                                  |
-| ------------------------------------------------------------- | ------------------ | ---------------------------------------------------------- |
-| Current engine and the `IEarnEngine` capability interfaces    | Per stack          | [Yield engines](../integrations/engines.md)                |
-| `ERC4626Engine`, `ERC4626EngineFactory`                       | Per stack, network | [ERC-4626](../modules/erc4626-engine.md)                   |
-| `VedaEngine`, `VedaPeripheryRegistry`, `VedaForwardingSolver` | Per Veda stack     | [Veda](../modules/veda.md#contracts)                       |
-| `PropAMMEngine` (experimental)                                | Per stack          | [PropAMM](../modules/propamm.md)                           |
-| `HoldEngine`                                                  | Per stack          | [Hold](../modules/hold.md)                                 |
-| `SingleZoneEarnRouter`                                        | Per Zone route     | [Zones](../modules/zone-router.md#router-contract)         |
-| `EarnContributionController`, `EarnMerkleRewardDistributor`   | Optional per stack | [Rewards](../modules/rewards.md)                           |
-| `EarnRewardsFactory`                                          | Network            | [Rewards installation](../modules/rewards.md#installation) |
+| Capability contracts                                          | Scope                  | Reference                                                  |
+| ------------------------------------------------------------- | ---------------------- | ---------------------------------------------------------- |
+| Current engine and the `IEarnEngine` capability interfaces    | Per stack              | [Yield engines](../integrations/engines.md)                |
+| `ERC4626Engine`, `ERC4626EngineFactory`                       | Per stack, network     | [ERC-4626](../modules/erc4626-engine.md)                   |
+| `VedaEngine`, `VedaPeripheryRegistry`, `VedaForwardingSolver` | Per Veda stack         | [Veda](../modules/veda.md#contracts)                       |
+| `PropAMMEngine` (experimental)                                | Per stack              | [PropAMM](../modules/propamm.md)                           |
+| `HoldEngine`                                                  | Per stack              | [Hold](../modules/hold.md)                                 |
+| `UpshiftEngine`, `UpshiftRedeemReceiver`                      | Per stack, per request | [Upshift](../modules/upshift.md#contracts)                 |
+| `SingleZoneEarnRouter`                                        | Per Zone route         | [Zones](../modules/zone-router.md#router-contract)         |
+| `EarnContributionController`, `EarnMerkleRewardDistributor`   | Optional per stack     | [Rewards](../modules/rewards.md)                           |
+| `EarnRewardsFactory`                                          | Network                | [Rewards installation](../modules/rewards.md#installation) |
 
 ## EarnFactory
 

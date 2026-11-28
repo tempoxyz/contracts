@@ -36,6 +36,7 @@ The repository implements:
 - immediate ERC-4626 execution through `ERC4626Engine`;
 - immediate and queued Veda exits through `VedaEngine`;
 - experimental immediate execution against a DirectPropAMM pool through `PropAMMEngine`;
+- immediate and queued exits from an Upshift vault through `UpshiftEngine`, without cancellation;
 - same-source-Zone private callbacks through `SingleZoneEarnRouter`, converting a different private
   asset at exact 1:1 par through one immutable DirectPropAMM pool;
 - optional one-way contribution orchestration; and
